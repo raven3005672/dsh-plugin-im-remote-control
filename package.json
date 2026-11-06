@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-im-remote-control",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Control a DeepSeek Harness Session from a Feishu (Lark) bot: messages arrive as user turns, turn results go back to the chat.",
   "icon": "icon.png",
   "license": "MIT",
