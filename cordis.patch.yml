@@ -1,0 +1,17 @@
+# Bundle patch: inserts the plugin row. A profile's own patch layer overrides
+# this row by id — that override is what the Settings page edits.
+#
+# The id doubles as the settings namespace, so it must stay
+# `dsh-plugin-im-remote-control`.
+- insert:
+    - id: dsh-plugin-im-remote-control
+      name: dsh-plugin-im-remote-control
+      config:
+        controllerSessionId: ''
+        channels: [feishu]
+        feishu:
+          appId: ''
+          appSecret: ''
+        allowedChats: []
+        ack: true
+        reply: true

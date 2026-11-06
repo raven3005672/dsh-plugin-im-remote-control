@@ -1,0 +1,73 @@
+{
+  "name": "dsh-plugin-im-remote-control",
+  "version": "0.1.0",
+  "description": "Control a DeepSeek Harness Session from a Feishu (Lark) bot: messages arrive as user turns, turn results go back to the chat.",
+  "icon": "icon.png",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "icon.png"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "feishu",
+    "lark",
+    "remote-control"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.2": "compatible"
+      }
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.0 <0.3.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
+    "smoke": "node scripts/smoke.mjs && node scripts/smoke-approval.mjs && node scripts/smoke-client.mjs",
+    "verify": "npm run typecheck && npm run build && npm run smoke",
+    "prepack": "npm run build",
+    "rehearsal": "node scripts/rehearsal.mjs",
+    "prepublishOnly": "npm run verify"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5",
+    "@larksuiteoapi/node-sdk": "^1.76.0"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "esbuild": "^0.25.0",
+    "react": "18.3.1",
+    "typescript": "5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raven3005672/dsh-plugin-im-remote-control.git"
+  },
+  "homepage": "https://github.com/raven3005672/dsh-plugin-im-remote-control#readme",
+  "bugs": {
+    "url": "https://github.com/raven3005672/dsh-plugin-im-remote-control/issues"
+  }
+}
