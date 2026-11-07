@@ -97,7 +97,16 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 - 入站解析 `parent_id ?? root_id`；`admit()` 命中路由时把消息投给源会话（带原 label），不再进中控。`promptSession()` 抽出复用。
 - `scripts/smoke-replies.mjs`：命中 / 跨 chat / 未知 / 过期 / 淘汰 / 可选 label。
 
-**已验证**：`npm run verify` 全绿。**待真机复测**：重载后再产生一条结果，引用它回复，确认日志 `quoted reply … → session-…` 且源会话收到内容。
+**已验证**：`npm run verify` 全绿（新增 `scripts/smoke-replies.mjs`）。
+
+**真机复测（2026-11-07 16:10:18）**：dispatch 一条结果到 chat，用户引用该结果回复「3」，日志：
+
+```
+quoted reply om_x100b61d980502cb4b0fab745200489d → session-9ce7213e-8bb6-4271-bfbe-c9a8e29f4d45
+admitted om_x100b61d980502cb4b0fab745200489d → session-9ce7213e-8bb6-4271-bfbe-c9a8e29f4d45 (direct)
+```
+
+中控会话没有收到这条回复，路由生效。注意：只有**重载之后**发出的结果消息才在路由表里（24h / 200 条），更早的结果引用仍会进中控。
 
 ## 2026-11-06 审查修复（Claude Code + 本 agent 双审）
 
