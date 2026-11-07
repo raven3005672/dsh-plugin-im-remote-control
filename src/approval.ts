@@ -10,6 +10,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import type { ApprovalOutcome, ApprovalRequestEvent } from './types.ts'
+import type { ApprovalResolution } from './cards.ts'
 
 /** `/approve <id>` or `/deny <id>`; ids are short lowercase hex. */
 const COMMAND = /^\/(approve|deny)\s+([0-9a-f]{4,12})$/u
@@ -61,6 +62,8 @@ export type ApprovalAnswer =
 export interface ApprovalRegistryOptions {
   /** Post one fresh ask to its chat. */
   notify(notice: ApprovalNotice): void
+  /** Rewrite the ask's card once it is decided, expired or withdrawn. */
+  resolved?(notice: ApprovalNotice, messageId: string | undefined, resolution: ApprovalResolution): void
   /** Report an ask that timed out with no decision. */
   expire(notice: ApprovalNotice): void
   /** Milliseconds a chat may take before its silence is treated as a rejection. */
@@ -69,8 +72,11 @@ export interface ApprovalRegistryOptions {
 
 /** One ask waiting for a chat decision. */
 interface Pending {
+  readonly notice: ApprovalNotice
   readonly chatId: string
   readonly toolName: string
+  /** Card message this ask was published as, when it was published as a card. */
+  messageId?: string
   readonly resolve: (outcome: ApprovalOutcome) => void
   readonly timer: ReturnType<typeof setTimeout>
   readonly detach: () => void
@@ -149,12 +155,36 @@ export class ApprovalRegistry {
    * @returns what the reply did, so the caller can phrase its acknowledgement.
    */
   answer(chatId: string, command: ApprovalCommand): ApprovalAnswer {
-    const entry = this.pendings.get(command.id)
-    if (entry === undefined) return { status: 'unknown' }
-    if (entry.chatId !== chatId) return { status: 'foreign', toolName: entry.toolName }
-    const outcome = command.verb === 'approve' ? 'allowed-once' : 'rejected'
-    this.settle(command.id, outcome)
-    return { status: 'settled', id: command.id, toolName: entry.toolName, outcome }
+    return this.decide(chatId, command.id, command.verb === 'approve' ? 'allowed-once' : 'rejected')
+  }
+
+  /**
+   * Apply one card click.
+   * @param id - short approval id carried by the button.
+   * @param chatId - chat the card was posted in.
+   * @param allow - true for the approve button, false for deny.
+   * @returns what the click did, so the callback can phrase its toast.
+   */
+  resolveCard(id: string, chatId: string, allow: boolean): ApprovalAnswer {
+    return this.decide(chatId, id, allow ? 'allowed-once' : 'rejected')
+  }
+
+  /**
+   * Remember the card message an ask was published as.
+   * @param id - short approval id.
+   * @param messageId - Feishu message id of the card.
+   */
+  attachCard(id: string, messageId: string): void {
+    const entry = this.pendings.get(id)
+    if (entry !== undefined) entry.messageId = messageId
+  }
+
+  /**
+   * The ask as published, for a caller that must re-render its card.
+   * @param id - short approval id.
+   */
+  noticeOf(id: string): ApprovalNotice | undefined {
+    return this.pendings.get(id)?.notice
   }
 
   /** Withdraw every pending ask; used when the plugin unmounts. */
@@ -208,9 +238,9 @@ export class ApprovalRegistry {
     if (signal !== undefined && !signal.aborted) signal.addEventListener('abort', onAbort, { once: true })
     const detach = (): void => { signal?.removeEventListener('abort', onAbort) }
     const timer = setTimeout(() => {
-      if (this.settle(notice.id, 'rejected')) this.options.expire(notice)
+      if (this.settle(notice.id, 'rejected', true)) this.options.expire(notice)
     }, this.options.timeoutMs)
-    this.pendings.set(notice.id, { chatId: notice.chatId, toolName: notice.toolName, resolve, timer, detach })
+    this.pendings.set(notice.id, { notice, chatId: notice.chatId, toolName: notice.toolName, resolve, timer, detach })
     if (signal?.aborted === true) {
       // The request was withdrawn before the chat could see it: no notice.
       this.settle(notice.id, 'cancelled')
@@ -224,14 +254,34 @@ export class ApprovalRegistry {
    * Settle one entry, releasing its timer and abort listener.
    * @param id - short approval id.
    * @param outcome - decision handed back to the approval service.
+   * @param timedOut - whether the deadline, rather than a person, rejected it.
    * @returns whether an entry carried that id.
    */
-  private settle(id: string, outcome: ApprovalOutcome): boolean {
+  private settle(id: string, outcome: ApprovalOutcome, timedOut = false): boolean {
     const entry = this.pendings.get(id)
     if (entry === undefined) return false
     this.cancel(id)
     entry.resolve(outcome)
+    const resolution: ApprovalResolution = timedOut
+      ? 'timeout'
+      : outcome === 'allowed-once' || outcome === 'rejected' ? outcome : 'cancelled'
+    this.options.resolved?.(entry.notice, entry.messageId, resolution)
     return true
+  }
+
+  /**
+   * Apply one decision after checking the ask belongs to the chat.
+   * @param chatId - chat the decision came from.
+   * @param id - short approval id.
+   * @param outcome - the decision.
+   * @returns what the decision did.
+   */
+  private decide(chatId: string, id: string, outcome: 'allowed-once' | 'rejected'): ApprovalAnswer {
+    const entry = this.pendings.get(id)
+    if (entry === undefined) return { status: 'unknown' }
+    if (entry.chatId !== chatId) return { status: 'foreign', toolName: entry.toolName }
+    this.settle(id, outcome)
+    return { status: 'settled', id, toolName: entry.toolName, outcome }
   }
 
   /**

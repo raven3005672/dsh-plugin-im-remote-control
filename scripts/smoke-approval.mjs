@@ -13,12 +13,14 @@ const request = (overrides = {}) => ({ agent: { session: { id: 'session-1' } }, 
 function harness({ timeoutMs = 60_000 } = {}) {
   const notices = []
   const expired = []
+  const resolved = []
   const registry = new ApprovalRegistry({
     timeoutMs,
     notify: (notice) => notices.push(notice),
     expire: (notice) => expired.push(notice),
+    resolved: (notice, messageId, resolution) => resolved.push({ id: notice.id, messageId, resolution }),
   })
-  return { registry, notices, expired }
+  return { registry, notices, expired, resolved }
 }
 
 // --- command parsing ---------------------------------------------------------
@@ -74,6 +76,36 @@ assert.equal(parseApprovalCommand('批准 ab12cd'), undefined)
   assert.ok(!('reason' in bare.notices[0]), 'absent reason stays absent')
   bare.registry.dispose()
   assert.equal(await spare, 'cancelled')
+}
+
+// --- a card click settles the ask and remembers the card it came from -------
+{
+  const { registry, notices, resolved } = harness()
+  const pending = registry.forward('chat-1', '本会话', request(), never)
+  registry.attachCard(notices[0].id, 'om_card_1')
+  assert.deepEqual(registry.resolveCard(notices[0].id, 'chat-1', true), {
+    status: 'settled', id: notices[0].id, toolName: 'bash', outcome: 'allowed-once',
+  })
+  assert.equal(await pending, 'allowed-once')
+  assert.deepEqual(resolved, [{ id: notices[0].id, messageId: 'om_card_1', resolution: 'allowed-once' }])
+  assert.equal(registry.noticeOf(notices[0].id), undefined, 'settled asks expose no notice')
+  assert.equal(registry.resolveCard(notices[0].id, 'chat-1', true).status, 'unknown')
+
+  const foreign = harness()
+  const foreignPending = foreign.registry.forward('chat-1', '本会话', request(), never)
+  assert.equal(foreign.registry.resolveCard(foreign.notices[0].id, 'chat-2', true).status, 'foreign')
+  foreign.registry.dispose()
+  assert.equal(await foreignPending, 'cancelled')
+}
+
+// --- the deadline reports as timeout, not as a person's rejection -----------
+{
+  const { registry, notices, resolved } = harness({ timeoutMs: 20 })
+  registry.forward('chat-1', '本会话', request(), never)
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(notices.length, 1)
+  assert.equal(resolved.at(-1).resolution, 'timeout')
+  assert.equal(resolved.at(-1).messageId, undefined)
 }
 
 // --- the local chain can win the race ----------------------------------------

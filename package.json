@@ -46,7 +46,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "build": "node scripts/build.mjs",
-    "smoke": "node scripts/smoke.mjs && node scripts/smoke-approval.mjs && node scripts/smoke-client.mjs",
+    "smoke": "node scripts/smoke.mjs && node scripts/smoke-approval.mjs && node scripts/smoke-cards.mjs && node scripts/smoke-client.mjs",
     "verify": "npm run typecheck && npm run build && npm run smoke",
     "prepack": "npm run build",
     "rehearsal": "node scripts/rehearsal.mjs",

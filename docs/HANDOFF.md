@@ -1,11 +1,11 @@
-# 交接文档（2026-11-05）
+# 交接文档（2026-11-07）
 
 给接手的 agent：读这一份就够，不要从头翻会话记录。
 
 ## 项目
 
 `~/github/dsh-plugin-im-remote-control` —— 飞书机器人远程控制 DSH 会话。
-TypeScript，esbuild 产物在 `lib/`。`npm run verify` = typecheck + build + smoke + smoke-approval + smoke-client。
+TypeScript，esbuild 产物在 `lib/`。`npm run verify` = typecheck + build + smoke + smoke-approval + smoke-cards + smoke-client。
 
 ## 当前可用的功能
 
@@ -19,7 +19,8 @@ TypeScript，esbuild 产物在 `lib/`。`npm run verify` = typecheck + build + s
 | 分发接口：`POST /im-remote-control/dispatch`（Bearer token + chat allowlist） | mount() | ✅ |
 | 执行会话 turn/end → 插件按 requestId 回帖，首行 `【会话名】`，引用原消息 | `turn/end` 分支 | ✅ |
 | 中控零输出（dispatch 成功后吞掉它的回执） | `dispatchAt` 120s 抑制窗口 | ✅ |
-| 审批转发（`ask` 档，飞书 `/approve` `/deny`） | `src/approval.ts` + `approval/request` 监听 | ✅ |
+| 审批转发（`ask` 档，**卡片按钮** / 飞书 `/approve` `/deny`） | `src/approval.ts` + `src/cards.ts` + `approval/request` 监听 | ✅ |
+| 提问转发（`ask_user_question`，**选项卡片** / `/answer`） | `src/questions.ts` + `src/cards.ts` + `user-questions/request` 监听 | ✅ |
 | 设置页：中控会话 / 允许用户 / IM 勾选 / 飞书凭据 / 检测配置 | `src/client/Section.tsx` | ✅ |
 | gateway 模式（冷启动） | `gatewayEnabled()` 返回 false | ⏸ 暂停 |
 
@@ -62,6 +63,22 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 ```
 
 注意：策略 `never` 的会话不会产生审批请求，这个功能只对 `ask` 档有意义。
+
+## 刚做完：卡片审批与提问（2026-11-07）
+
+审批和 `ask_user_question` 现在都以飞书交互卡片（card 1.0）发到 chat；文本命令保留为 fallback。
+
+- `src/cards.ts`：纯函数卡片构造 + `parseCardAction`。按钮 value 形如 `{ k: 'approval', id, v: 'allow' }` / `{ k: 'question', id, q, v: label }`；结算后卡片原地更新成结果。
+- `src/approval.ts`：新增 `resolveCard` / `attachCard` / `noticeOf`；`resolved(notice, messageId, resolution)` 在结算后 patch 卡片（`allowed-once` / `rejected` / `timeout` / `cancelled`）。
+- `src/questions.ts`：`QuestionRegistry`，与审批同构的竞速（`prepend` + `next()` + `ownLifetime` 撤回桌面提示）；5 分钟超时只撤卡片、不替你回答；多问题聚合进度；多选/自定义走 `/answer <id> <文本>`。
+- `src/index.ts`：`sendCard`/`patchCard`（`im.message.create` + `im.message.patch`）；`card.action.trigger` 回调按 chatId + operator allowlist 校验后结算，返回 `{ toast, card: { type: 'raw', data } }`；`/answer` 在 `admit()` 里先于投递识别。
+- 卡片发送失败自动退回纯文本通知（审批/提问都一样），文本命令始终可用。
+
+**配置前提**：开发者后台「回调配置」里的 `card.action.trigger` 必须设为**长连接**并发布版本；只订阅 `im.message.receive_v1` 不配回调时，点按钮报 `200340`。
+
+**已验证**：`npm run verify` 全绿（新增 `scripts/smoke-cards.mjs`：卡片形状、按钮值、答题聚合、竞速、超时、abort、dispose、本地先答）；`npm run rehearsal` 通过。
+
+**待真机验证**：点卡片按钮 → 卡片变成结果；`ask_user_question` → 桌面弹窗撤回；确认 `200340` 是否因回调未配。
 
 ## 2026-11-06 审查修复（Claude Code + 本 agent 双审）
 

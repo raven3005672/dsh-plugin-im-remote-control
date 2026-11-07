@@ -48,6 +48,8 @@ await build({
 const SIDE_ENTRIES = [
   { source: 'src/platform/index.ts', outfile: 'lib/platform.mjs' },
   { source: 'src/approval.ts', outfile: 'lib/approval.js' },
+  { source: 'src/cards.ts', outfile: 'lib/cards.js' },
+  { source: 'src/questions.ts', outfile: 'lib/questions.js' },
 ]
 
 for (const entry of SIDE_ENTRIES) {

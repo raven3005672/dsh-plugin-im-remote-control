@@ -30,7 +30,16 @@ import type { IncomingMessage } from 'node:http'
 import * as Lark from '@larksuiteoapi/node-sdk'
 import z from '@deepseek-ai/schemastery'
 import { ApprovalRegistry, parseApprovalCommand } from './approval.ts'
-import type { ApprovalCommand } from './approval.ts'
+import type { ApprovalCommand, ApprovalNotice } from './approval.ts'
+import {
+  approvalCard,
+  approvalResolvedCard,
+  parseCardAction,
+  questionCard,
+  questionClosedCard,
+} from './cards.ts'
+import { parseAnswerCommand, QuestionRegistry } from './questions.ts'
+import type { QuestionCommand, QuestionNotice } from './questions.ts'
 import type {
   HostContext,
   PromptTextPart,
@@ -114,6 +123,13 @@ const PROBE_TIMEOUT_MS = 10_000
  * rejection is the fail-closed outcome the approval service already documents.
  */
 const APPROVAL_TIMEOUT_MS = 120_000
+
+/**
+ * How long a question card stays actionable. A question is not a fail-closed
+ * decision: a timeout withdraws the card and leaves the rest of the answerer
+ * chain to handle the request, exactly as if this plugin were not mounted.
+ */
+const QUESTION_TIMEOUT_MS = 5 * 60_000
 
 /** Gateway-mode inbound route registered on the Host WebServer. */
 const INBOUND_PATH = '/im-remote-control/inbound'
@@ -550,25 +566,112 @@ function mount(ctx: HostContext, config: RawConfig): void {
     }
   }
 
+  /**
+   * Send one interactive card and return the message it became.
+   * @param chatId - target chat.
+   * @param card - card JSON.
+   * @returns the new message id, or undefined when Feishu returned none.
+   */
+  async function sendCard(chatId: string, card: Record<string, unknown>): Promise<string | undefined> {
+    const response = await feishu.im.message.create({
+      params: { receive_id_type: 'chat_id' },
+      data: { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(card) },
+    })
+    const messageId = (response as { data?: { message_id?: string } }).data?.message_id
+    logLine('info', `sent card ${String(messageId ?? '?')} to ${chatId}`)
+    return messageId
+  }
+
+  /**
+   * Replace the content of one card this app sent.
+   * @param messageId - Feishu message id of the card.
+   * @param card - new card JSON.
+   */
+  async function patchCard(messageId: string, card: Record<string, unknown>): Promise<void> {
+    await feishu.im.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    })
+  }
+
+  /** Text fallback for an approval ask when its card cannot be posted. */
+  function approvalText(notice: ApprovalNotice): string {
+    return [
+      `【审批 ${notice.id}】${notice.name} 要执行 ${notice.toolName}，需要你确认`,
+      ...(notice.detail !== undefined ? [notice.detail] : notice.reason === undefined ? [] : [`原因：${notice.reason}`]),
+      `回复 /approve ${notice.id} 批准，/deny ${notice.id} 拒绝（${String(APPROVAL_TIMEOUT_MS / 1000)} 秒内有效）`,
+    ].join('\n')
+  }
+
+  /** Text fallback for a question ask when its card cannot be posted. */
+  function questionText(notice: QuestionNotice): string {
+    const lines = [`【问题 ${notice.id}】${notice.name} 需要你回答：`]
+    notice.questions.forEach((question, index) => {
+      lines.push(`${String(index + 1)}. ${question.question}`)
+      if (question.detail !== undefined && question.detail !== '') lines.push(question.detail)
+      const options = question.options ?? []
+      if (options.length > 0) lines.push(`选项：${options.map((option) => option.label).join(' / ')}`)
+    })
+    lines.push(`回复 /answer ${notice.id} <文本> 回答`)
+    return lines.join('\n')
+  }
+
   /** Approvals this chat can still answer; the registry owns their deadlines. */
   const approvals = new ApprovalRegistry({
     timeoutMs: APPROVAL_TIMEOUT_MS,
     notify: (notice) => {
-      const lines = [
-        `【审批 ${notice.id}】${notice.name} 要执行 ${notice.toolName}，需要你确认`,
-        // The localized detail is already a sentence; a raw reason needs a label.
-        ...(notice.detail !== undefined ? [notice.detail] : notice.reason === undefined ? [] : [`原因：${notice.reason}`]),
-        `回复 /approve ${notice.id} 批准，/deny ${notice.id} 拒绝（${String(APPROVAL_TIMEOUT_MS / 1000)} 秒内有效）`,
-      ]
-      void sendToChat(notice.chatId, lines.join('\n')).catch((error: unknown) => {
-        // An unreachable chat must not settle the ask: the desktop can still answer.
-        logLine('warn', `approval notify failed: ${String(error)}`)
-      })
+      void sendCard(notice.chatId, approvalCard(notice, APPROVAL_TIMEOUT_MS / 1_000))
+        .then((messageId) => {
+          if (messageId !== undefined) approvals.attachCard(notice.id, messageId)
+        })
+        .catch((error: unknown) => {
+          // An unreachable chat must not settle the ask: the desktop can still answer.
+          logLine('warn', `approval card failed: ${String(error)}; falling back to text`)
+          void sendToChat(notice.chatId, approvalText(notice)).catch((fallback: unknown) => {
+            logLine('warn', `approval notify failed: ${String(fallback)}`)
+          })
+        })
       logLine('info', `approval ${notice.id} asked in ${notice.chatId} (${notice.toolName})`)
+    },
+    resolved: (notice, messageId, resolution) => {
+      if (messageId === undefined) return
+      void patchCard(messageId, approvalResolvedCard(notice, resolution)).catch((error: unknown) => {
+        logLine('warn', `approval card patch failed: ${String(error)}`)
+      })
     },
     expire: (notice) => {
       logLine('info', `approval ${notice.id} expired`)
       void replyTo(undefined, notice.chatId, `审批 ${notice.id} 超时，已自动拒绝：${notice.toolName}`)
+    },
+  })
+
+  /** Questions this chat can still answer; the registry owns their deadlines. */
+  const questions = new QuestionRegistry({
+    timeoutMs: QUESTION_TIMEOUT_MS,
+    notify: (notice) => {
+      void sendCard(notice.chatId, questionCard(notice))
+        .then((messageId) => {
+          if (messageId !== undefined) questions.attachCard(notice.id, messageId)
+        })
+        .catch((error: unknown) => {
+          logLine('warn', `question card failed: ${String(error)}; falling back to text`)
+          void sendToChat(notice.chatId, questionText(notice)).catch((fallback: unknown) => {
+            logLine('warn', `question notify failed: ${String(fallback)}`)
+          })
+        })
+      logLine('info', `question ${notice.id} asked in ${notice.chatId} (${String(notice.questions.length)} question(s))`)
+    },
+    updated: (notice, messageId) => {
+      if (messageId === undefined) return
+      void patchCard(messageId, questionCard(notice)).catch((error: unknown) => {
+        logLine('warn', `question card progress patch failed: ${String(error)}`)
+      })
+    },
+    resolved: (notice, resolution, messageId) => {
+      if (messageId === undefined) return
+      void patchCard(messageId, questionClosedCard(notice, resolution)).catch((error: unknown) => {
+        logLine('warn', `question card patch failed: ${String(error)}`)
+      })
     },
   })
 
@@ -591,6 +694,100 @@ function mount(ctx: HostContext, config: RawConfig): void {
       case 'unknown':
         await replyTo(messageId, chatId, `没有待审批的请求 ${command.id}（可能已超时或被桌面处理）`)
         break
+    }
+  }
+
+  /**
+   * Apply one `/answer` reply to a pending question.
+   * @param message - the command message.
+   * @param command - parsed request id and answer text.
+   */
+  async function answerQuestion(message: InboundMessage, command: QuestionCommand): Promise<void> {
+    const { messageId, chatId } = message
+    const result = questions.answerText(command.id, chatId, command.text)
+    switch (result.status) {
+      case 'settled':
+        await replyTo(messageId, chatId, `已收到回答（${command.id}）`)
+        logLine('info', `question ${command.id} answered from ${message.openId ?? 'unknown'} (${chatId})`)
+        break
+      case 'partial':
+        await replyTo(messageId, chatId, `已记录，还有 ${String(result.remaining)} 个问题待回答`)
+        break
+      case 'foreign':
+        await replyTo(messageId, chatId, `问题 ${command.id} 不属于本会话`)
+        break
+      case 'unknown':
+        await replyTo(messageId, chatId, `没有待回答的问题 ${command.id}（可能已超时或被桌面处理）`)
+        break
+      case 'unsupported':
+        await replyTo(messageId, chatId, result.reason)
+        break
+    }
+  }
+
+  /**
+   * Apply one interactive-card click: an approval decision or a question option.
+   * @param data - raw `card.action.trigger` payload from Feishu.
+   * @returns the callback response (toast plus an updated card), when handled.
+   */
+  async function handleCardAction(data: unknown): Promise<Record<string, unknown> | undefined> {
+    const payload = data as {
+      context?: { open_chat_id?: string; open_message_id?: string }
+      open_chat_id?: string
+      operator?: { open_id?: string }
+      action?: { value?: unknown }
+    }
+    const action = parseCardAction(payload.action?.value)
+    if (action === undefined) return undefined
+    const chatId = payload.context?.open_chat_id ?? payload.open_chat_id ?? ''
+    const openId = payload.operator?.open_id ?? ''
+    if (allowedOpenIds.size > 0 && !allowedOpenIds.has(openId)) {
+      logLine('info', `ignored card click from ${openId} (not in allowedOpenIds)`)
+      return { toast: { type: 'error', content: '你不在允许列表里' } }
+    }
+    if (allowedChats.size > 0 && !allowedChats.has(chatId)) {
+      logLine('info', `ignored card click in ${chatId} (not in allowedChats)`)
+      return { toast: { type: 'error', content: '这个对话没有授权' } }
+    }
+    if (action.kind === 'approval') {
+      const notice = approvals.noticeOf(action.id)
+      const allow = action.value === 'allow'
+      const answer = approvals.resolveCard(action.id, chatId, allow)
+      if (answer.status === 'settled') {
+        logLine('info', `approval ${action.id} → ${allow ? 'allowed-once' : 'rejected'} from card (${openId || 'unknown'}, ${chatId})`)
+        return {
+          toast: { type: 'success', content: allow ? '已批准' : '已拒绝' },
+          ...(notice === undefined ? {} : { card: { type: 'raw', data: approvalResolvedCard(notice, allow ? 'allowed-once' : 'rejected') } }),
+        }
+      }
+      return {
+        toast: {
+          type: 'warning',
+          content: answer.status === 'foreign' ? '这个审批不属于本对话' : '这个审批已经结束或超时了',
+        },
+      }
+    }
+    if (chatId === '') return { toast: { type: 'warning', content: '无法识别这个对话' } }
+    const before = questions.noticeOf(action.id)
+    const result = questions.answerCard(action.id, chatId, action.questionId ?? '', action.value ?? '')
+    switch (result.status) {
+      case 'settled':
+        logLine('info', `question ${action.id} answered from card (${openId || 'unknown'}, ${chatId})`)
+        return {
+          toast: { type: 'success', content: '已收到回答' },
+          ...(before === undefined ? {} : { card: { type: 'raw', data: questionClosedCard(before, 'answered') } }),
+        }
+      case 'partial':
+        return {
+          toast: { type: 'info', content: `已记录，还有 ${String(result.remaining)} 个问题` },
+          ...(before === undefined ? {} : { card: { type: 'raw', data: questionCard(before) } }),
+        }
+      case 'unsupported':
+        return { toast: { type: 'warning', content: result.reason } }
+      case 'foreign':
+        return { toast: { type: 'warning', content: '这个问题不属于本对话' } }
+      case 'unknown':
+        return { toast: { type: 'warning', content: '这个问题已经结束或超时了' } }
     }
   }
 
@@ -620,6 +817,12 @@ function mount(ctx: HostContext, config: RawConfig): void {
     const command = parseApprovalCommand(text)
     if (command !== undefined) {
       await answerApproval(message, command)
+      return
+    }
+
+    const answerCommand = parseAnswerCommand(text)
+    if (answerCommand !== undefined) {
+      await answerQuestion(message, answerCommand)
       return
     }
 
@@ -657,6 +860,18 @@ function mount(ctx: HostContext, config: RawConfig): void {
 
   // A reload must not leave a chat-facing ask pending: cancel whatever is open.
   ctx.effect(() => () => { approvals.dispose() }, 'im-remote-control: pending approvals')
+
+  // Questions: the same race as approvals, so a chat answer retracts the
+  // desktop prompt and a desktop answer retracts the card.
+  ctx.effect(() => ctx.on('user-questions/request', (request, next) => {
+    const sessionId = request.agent?.session.id
+    const state = sessionId === undefined ? undefined : turns.get(sessionId)
+    if (state === undefined) return next()
+    return questions.forward(state.chatId, state.label ?? '本会话', request, next)
+  }, { prepend: true }), 'im-remote-control: question forwarding')
+
+  // A reload must not leave a question card actionable either.
+  ctx.effect(() => () => { questions.dispose() }, 'im-remote-control: pending questions')
 
   // Turn results: bind each admitted turn to its chat, then answer when it closes.
   ctx.effect(() => ctx.on('session/event', (session: SessionLike, event: SessionEventLike) => {
@@ -912,6 +1127,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
 
   // Direct mode: own the Feishu long connection.
   const dispatcher = new Lark.EventDispatcher({}).register({
+    'card.action.trigger': async (data: unknown) => handleCardAction(data),
     'im.message.receive_v1': async (data: unknown) => {
       const payload = data as {
         message?: {

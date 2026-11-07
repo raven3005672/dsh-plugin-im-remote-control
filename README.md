@@ -14,11 +14,12 @@
 | 回合回帖 | 回合结束把**最后一步**的 assistant 文本发回聊天；`dispatch` 来的任务带 `【会话名】` 首行 |
 | 表情回执 | 收到消息贴 `OK`；会话正忙时贴 `OneSecond` |
 | 分发接口 | 中控会话把任务投给任意会话，回复绑定由插件负责（Bearer token + chat allowlist） |
-| 审批转发 | `ask` 档会话的审批发到飞书，`/approve` / `/deny` 远程决定，与桌面弹窗竞速 |
+| 审批转发 | `ask` 档会话的审批以**卡片**发到飞书，点按钮或回 `/approve` / `/deny` 决定，与桌面弹窗竞速 |
+| 卡片提问 | `ask_user_question`（选方案、计划确认）以**卡片**发到飞书，选项即按钮；多选/自定义用 `/answer` |
 | 设置页 | 中控会话、允许用户、飞书凭据（只写 + 掩码状态 + 清除）、渠道开关、配置探测（设置 → 远程控制） |
 | `/whoami` | 返回发送者 open_id，用于配置 allowlist |
 
-未交付：微信、gateway 冷启动、图片/文件、卡片消息、超限重试、多实例。
+未交付：微信、gateway 冷启动、图片/文件、超限重试、多实例。
 
 ## 工作方式
 
@@ -29,8 +30,10 @@
 dsh-plugin-im-remote-control（Host）
   ├─ sessionController.prompt  → 目标会话新增一条 user 消息
   ├─ ctx.on('session/event')   → 回合结束把结论回帖
-  ├─ ctx.on('approval/request')→ 审批通知发到 chat，/approve /deny 决定
-  └─ ctx.webServer             → /dispatch（Bearer）/ /check（探测）/ /status（状态）
+  ├─ ctx.on('approval/request')      → 卡片审批（按钮 / /approve /deny）
+  ├─ ctx.on('user-questions/request')→ 卡片提问（选项按钮 / /answer）
+  ├─ card.action.trigger             → 按钮点击结算，更新卡片
+  └─ ctx.webServer                   → /dispatch（Bearer）/ /check（探测）/ /status（状态）
 ```
 
 - `requests: requestId → chat` 记录本次投递属于哪个聊天；`user/message` 事件里带回 `rpcId`，据此绑定 `turns: sessionId → chat`。
@@ -77,8 +80,9 @@ dsh plugin --profile <profile> add /path/to/dsh-plugin-im-remote-control
 1. 在[飞书开放平台](https://open.feishu.cn/app)创建**企业自建应用**，开启「机器人」能力。
 2. 权限：接收消息（`im:message`、`im:message.group_msg`）、以应用身份发消息（`im:message:send_as_bot`）。
 3. 事件订阅选**长连接**，订阅 `im.message.receive_v1`。这一步不需要公网地址。
-4. 发布版本，把机器人加进目标会话，或者在私聊里使用。
-5. 用 `/whoami` 拿到自己的 open_id，填进 `allowedUsers`。
+4. **回调配置**页把 `card.action.trigger` 也设为**长连接**（这是「卡片回传交互」，不在事件订阅页）。少了这一步，点卡片按钮会报 `200340`。
+5. 发布版本，把机器人加进目标会话，或者在私聊里使用。
+6. 用 `/whoami` 拿到自己的 open_id，填进 `allowedUsers`。
 
 ## 配置
 
@@ -107,33 +111,57 @@ dsh plugin --profile <profile> add /path/to/dsh-plugin-im-remote-control
 | `/whoami` | 回复发送者的 open_id |
 | `/approve <id>` | 批准一次审批（`allowed-once`） |
 | `/deny <id>` | 拒绝一次审批（`rejected`） |
+| `/answer <id> <文本>` | 回答提问；多选可用逗号分隔选项，自定义回答直接写文本 |
 
 群聊里发命令也要 @ 机器人；私聊不需要。
 
 ## 审批转发
 
-会话处于 `ask` 审批档时，需要确认的工具调用（例如写工作区外的文件）会把审批发到绑定的飞书会话：
+会话处于 `ask` 审批档时，需要确认的工具调用（例如写工作区外的文件）会把审批以交互卡片发到绑定的飞书会话：
 
 ```
-【审批 3fa9c1】股票分析 要执行 bash，需要你确认
+需要审批 · bash          [批准一次] [拒绝]
+会话：股票分析
+工具：bash
 允许本次操作使用 danger-full-access 权限：需要写入工作区外
-回复 /approve 3fa9c1 批准，/deny 3fa9c1 拒绝（120 秒内有效）
+审批 3fa9c1 · 120 秒内有效 · 也可回复 /approve 3fa9c1
 ```
 
-第二行是提问方给的说明：有本地化文案就用本地化，没有才退回 `原因：<原始 reason>`。
+第三行是提问方给的说明：有本地化文案就用本地化，没有才退回 `原因：<原始 reason>`。
 
-| 回复 | 结果 |
+| 操作 | 结果 |
 |---|---|
-| `/approve <id>` | `allowed-once`，只授权这一次 |
-| `/deny <id>` | `rejected` |
+| 点「批准一次」或 `/approve <id>` | `allowed-once`，只授权这一次 |
+| 点「拒绝」或 `/deny <id>` | `rejected` |
 | 回合被中止 / 请求撤销 | `cancelled` |
 | 120 秒没人回 | 自动 `rejected`，并回帖告知 |
+
+决定后卡片会原地更新成结果（已批准 / 已拒绝 / 已超时），按钮消失，避免重复点击。卡片发送失败时自动退回纯文本通知（仍可用 `/approve` / `/deny`）。
 
 **和桌面竞速**：插件用 `prepend` 抢在浏览器应答器之前注册监听，所以两边同时在等，谁先决定谁生效。飞书先答时，桌面那个弹窗（连同被它占住的输入框）会被撤回；桌面先答时，飞书里的 id 随即失效（再回会得到「没有待审批的请求」）。
 
 只有绑定过 chat 的会话才会转发审批（飞书消息投递进来的，或 `dispatch` 进来的）；桌面上手动发起的会话照旧走桌面弹窗。
 
 注意：`never` 档的会话不会产生审批请求，这个功能只对 `ask` 档有意义。
+
+## 提问转发
+
+agent 调用 `ask_user_question`（选方案、确认计划、补充缺失信息）时，如果这一轮是从飞书投递进来的，问题会以卡片发到同一个 chat：
+
+- **有选项**：每个选项一个按钮，点一下即作答；
+- **多选**：卡片列出选项，回复 `/answer <id> 选项1,选项2`；
+- **没有选项 / 想自由回答**：回复 `/answer <id> <文本>`。
+
+```
+需要你回答
+1. 用哪个包管理器？
+[A] [B]
+请求 cd34ef · 300 秒内有效 · 自定义回答：/answer cd34ef <文本>
+```
+
+卡片 5 分钟内有效；超时只撤回卡片，桌面弹窗继续等（不会替你拒绝）。和审批一样，飞书先答会撤回桌面提示，桌面先答会把卡片改成「已在其他界面处理」。多个问题时，答完一个卡片会更新进度，全部答完才把结果交回模型。
+
+`/answer <id>` 里的 id 就是卡片底部那个 id；它和审批 id 一样是 6 位十六进制。
 
 ## 本地路由与鉴权
 
@@ -168,6 +196,7 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 - **插件重载会丢正在进行的回合的回帖绑定**：重载时如果还有 `dispatch` 在跑，那个回合的结果不会自动回到飞书。
 - 首次配置必须先给出一项 allowlist，否则插件不连飞书，`/whoami` 也用不了。
 - 设置页的 App Secret 保存后不回显明文：只显示「已配置（\*\*\*\*末四位）」，Host 之外只出现这四个字符；要更换就粘贴新值，要删除点「清除」。
+- **卡片按钮需要飞书回调配置**：开发者后台「回调配置」里的 `card.action.trigger` 必须设为长连接并发布版本；只订阅事件、不配回调时，点按钮会报 `200340`，但文本命令 `/approve`、`/deny`、`/answer` 仍然可用。
 
 ### 飞书接口频率限制
 

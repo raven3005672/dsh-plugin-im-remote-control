@@ -66,6 +66,68 @@ export interface ApprovalRequestEvent {
   readonly signal?: AbortSignal
 }
 
+/** One selectable answer offered for a question. */
+export interface AskUserQuestionOption {
+  /** User-facing label; also what an answer carries back. */
+  readonly label: string
+  /** Optional supporting line rendered under the question. */
+  readonly description?: string
+}
+
+/**
+ * Presentation intent the asker attached to a question. Only plan review is
+ * defined today: the labeled option approves the plan, every other declines it.
+ */
+export interface AskUserQuestionIntent {
+  readonly kind: 'plan-review'
+  /** Option label that approves the plan. */
+  readonly approve: string
+  /** Tool call whose arguments carry the plan, when the asker named one. */
+  readonly callId?: string
+}
+
+/** One question the agent asks the human. */
+export interface AskUserQuestionItem {
+  /** Stable id echoed in the answer. */
+  readonly id: string
+  /** The question itself. */
+  readonly question: string
+  /** Optional supporting detail kept out of option labels. */
+  readonly detail?: string
+  /** Optional short heading. */
+  readonly header?: string
+  /** Choices the chat can render as buttons. */
+  readonly options?: readonly AskUserQuestionOption[]
+  /** Whether more than one label may be selected. */
+  readonly multiSelect?: boolean
+  /** Optional presentation intent; absent asks for the generic option list. */
+  readonly intent?: AskUserQuestionIntent
+}
+
+/** Answer to one question, keyed by its id. */
+export interface AskUserQuestionAnswerItem {
+  readonly id: string
+  readonly selected: readonly string[]
+  readonly custom?: string
+}
+
+/** The human's answer batch, in question order. */
+export interface AskUserQuestionAnswer {
+  readonly answers: readonly AskUserQuestionAnswerItem[]
+}
+
+/** The question request fields this plugin reads from `user-questions/request`. */
+export interface UserQuestionRequestEvent {
+  /** Questions to display. */
+  readonly questions: readonly AskUserQuestionItem[]
+  /** Agent whose tool call is waiting; its session ties the ask to a chat. */
+  readonly agent?: { readonly session: { readonly id: string } }
+  /** Aborting the request withdraws it. */
+  readonly signal?: AbortSignal
+  /** Timed-ask bookkeeping; a foreground wait is bounded by the tool row. */
+  readonly wait?: { readonly callId: string; readonly timed?: boolean }
+}
+
 /** Registration options accepted by the dispatch context. */
 export interface ListenerOptions {
   /** Run this listener before those registered earlier for the same event. */
@@ -92,6 +154,11 @@ export interface HostContext {
   on(
     event: 'approval/request',
     listener: (request: ApprovalRequestEvent, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>,
+    options?: ListenerOptions,
+  ): () => void
+  on(
+    event: 'user-questions/request',
+    listener: (request: UserQuestionRequestEvent, next: () => Promise<AskUserQuestionAnswer>) => Promise<AskUserQuestionAnswer>,
     options?: ListenerOptions,
   ): () => void
 }
