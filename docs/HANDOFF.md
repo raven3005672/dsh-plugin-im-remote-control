@@ -78,7 +78,12 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 
 **已验证**：`npm run verify` 全绿（新增 `scripts/smoke-cards.mjs`：卡片形状、按钮值、答题聚合、竞速、超时、abort、dispose、本地先答）；`npm run rehearsal` 通过。
 
-**待真机验证**：点卡片按钮 → 卡片变成结果；`ask_user_question` → 桌面弹窗撤回；确认 `200340` 是否因回调未配。
+**真机验证（2026-11-07 16:04–16:06，机器人发布 + 回调配置完成后）**：
+
+- **提问卡片**：`question c4abc5 asked` → 卡片 `om_x100…` → 16:04:25 点击 → `question c4abc5 answered from card (ou_6bfe…)` → 无 patch 错误 → 16:04:26 回合继续并回帖（45 字符）。卡片更新为「已回答」。
+- **审批卡片**：`approval 768369 asked (bash)` → 卡片 `om_x100…` → 16:06:06 点「拒绝」→ `approval 768369 → rejected from card` → 工具被拦、目标文件未写 → 16:06:09 回帖（301 字符）；无 patch 错误。
+- `200340` 未出现（「卡片回传交互」长连接配置已生效）。
+- 待补：点「批准」路径（与拒绝共用同一回调，风险低）；桌面弹窗撤回的肉眼确认。
 
 ## 2026-11-06 审查修复（Claude Code + 本 agent 双审）
 
