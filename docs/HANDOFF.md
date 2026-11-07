@@ -203,3 +203,9 @@ admitted om_x100b61d980502cb4b0fab745200489d → session-9ce7213e-8bb6-4271-bfbe
 - 配置：profile `~/.dsh/profiles/desktop/cordis.patch.yml` 里的 override 行。
 - 飞书应用：`cli_<app-id>`（自建应用 App ID，在飞书开放平台查看），机器人名「DSH总控」。
 - 中控会话：`session-<controller-id>`（本机 profile 里配置的 `controllerSessionId`）。
+
+## 发布（2026-11-07）
+
+- **0.2.0** 已通过 `v0.2.0` tag → GitHub Actions → npm Trusted Publishing 发布（SLSA provenance，14 个文件 / 241 KB，`latest = 0.2.0`）。
+- 内容：卡片审批、卡片提问、引用回复路由（含主聊天回帖）、图片输入；文件/语音/微信/gateway 仍未交付。
+- 发布 workflow：`.github/workflows/publish.yml`（tag `v*`、校验 tag 与 package.json 版本一致、`npm run verify`、`npm publish --provenance`）。
