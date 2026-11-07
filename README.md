@@ -1,6 +1,8 @@
 # dsh-plugin-im-remote-control
 
-用飞书（Lark）机器人远程控制一个 DSH 会话：消息进会话，回合结果回到聊天，`ask` 档的审批可以在飞书里远程批准。
+用飞书（Lark）机器人远程控制一个 DSH 会话：消息进会话，回合结果回到聊天，`ask` 档的审批和 `ask_user_question` 提问都能在飞书里以卡片处理。
+
+设计细节（状态机、竞速、卡片协议、容量与边界）见 [docs/DESIGN.md](docs/DESIGN.md)。
 
 > 当前版本只交付 **direct 模式**：插件自己持有飞书长连接，不需要公网 IP。微信接入和 gateway 冷启动模式**尚未交付**，代码保留但未启用（见「路线图」）。
 
@@ -40,6 +42,8 @@ dsh-plugin-im-remote-control（Host）
 - `requests: requestId → chat` 记录本次投递属于哪个聊天；`user/message` 事件里带回 `rpcId`，据此绑定 `turns: sessionId → chat`。
 - `mode: 'queue'` 在宿主里是 `agent.followup()`：每条消息自成一个回合，回合之间不重叠，所以按 session 绑定是安全的。
 - 只有插件自己投递过的回合才回帖；桌面里手动发起的回合不受影响。
+- **引用回复路由**：机器人结果消息会记进 `QuotedRoutes`（24h / 200 条）；引用它回复时，消息回到产生该结果的会话，且结果直接发主聊天。
+- **中控回执抑制**：dispatch 后 120s 内，只剩中控会话自己的回合结果被当作「已派发」回声吞掉；执行会话和引用回复的结果照常发。
 
 ## 安装
 
@@ -206,6 +210,7 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 - **一个实例只驱动一个 `sessionId`**；一个飞书应用只能有一条长连接（不要再同时跑外部 bridge）。
 - 审批只对 `ask` 档生效；群聊里**被 allowlist 允许的成员**都能批准同一个群里的审批，要更严格就只配 `allowedUsers` 一个人。
 - **插件重载会丢正在进行的回合的回帖绑定**：重载时如果还有 `dispatch` 在跑，那个回合的结果不会自动回到飞书。
+- **引用路由表在内存里**（24h / 200 条）：重载后，重载前发出的结果消息不再路由；引用用户自己的消息也仍然进中控。
 - 首次配置必须先给出一项 allowlist，否则插件不连飞书，`/whoami` 也用不了。
 - 设置页的 App Secret 保存后不回显明文：只显示「已配置（\*\*\*\*末四位）」，Host 之外只出现这四个字符；要更换就粘贴新值，要删除点「清除」。
 - **卡片按钮需要飞书回调配置**：开发者后台「回调配置」里的 `card.action.trigger` 必须设为长连接并发布版本；只订阅事件、不配回调时，点按钮会报 `200340`，但文本命令 `/approve`、`/deny`、`/answer` 仍然可用。
@@ -239,6 +244,8 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 |---|---|
 | 飞书发消息没反应 | 日志里有没有 `admitted` / `ignored sender` / `ignored chat` |
 | 回合结束没有回帖 | 这条回合是不是从飞书或 dispatch 发起的；日志里的 `bound` / `sent` |
+| 引用回复没有回帖 | 日志有没有 `quoted reply` / `sent`；引用的结果是不是重载前发出的 |
+| 点卡片按钮报 200340 | 飞书后台「回调配置 → card.action.trigger」是否长连接且已发布版本 |
 | 没有收到审批 | 会话是不是 `ask` 档；这条回合有没有绑定 chat；日志 `approval <id> asked` |
 | `/approve` 回「没有待审批的请求」 | id 抄错，或已超过 120 秒 |
 | dispatch 返回 401 | token 文件不存在或已轮换；重启 DSH 或重读文件 |
@@ -250,19 +257,22 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 
 ```sh
 npm run typecheck   # tsc --noEmit
-npm run build       # lib/index.js + lib/client.js + lib/approval.js + lib/platform.mjs
-npm run smoke       # 配置解析 + 审批状态机 + 客户端渲染（无网络、无凭据）
+npm run build       # lib/index.js + lib/client.js + lib/approval.js + lib/cards.js + lib/questions.js + lib/replies.js + lib/platform.mjs
+npm run smoke       # 配置解析 + 审批 + 卡片 + 提问聚合 + 引用路由 + 客户端渲染（无网络、无凭据）
 npm run rehearsal   # 真实 mount 演练：假凭据 + 临时路径，验证 token/路由/鉴权/卸载（会连一次飞书）
 npm run verify      # typecheck + build + smoke
 ```
 
-产物：`lib/index.js`（Host）、`lib/client.js`（设置页）、`lib/approval.js`（审批状态机，独立产物供测试）、`lib/platform.mjs`（脚本用的平台适配）；`icon.png` 是插件列表图标（256×256 PNG，宿主限制 ≤256 KiB）。`src/gateway/` 是暂停的网关源码，不构建、不随包发布。
+产物：`lib/index.js`（Host）、`lib/client.js`（设置页）、`lib/approval.js`、`lib/cards.js`、`lib/questions.js`、`lib/replies.js`（状态机与纯函数，独立产物供测试）、`lib/platform.mjs`（脚本用的平台适配）；`icon.png` 是插件列表图标（256×256 PNG，宿主限制 ≤256 KiB）。`src/gateway/` 是暂停的网关源码，不构建、不随包发布。
 
 目录：
 
 ```
-src/index.ts          Host 半边：连接、投递、回帖、路由、审批接线
+src/index.ts          Host 半边：连接、投递、回帖、路由、审批/提问接线
 src/approval.ts       审批状态机（短 id、超时、abort、竞速、撤回）
+src/questions.ts      提问状态机（竞速、多题聚合、超时撤卡、/answer）
+src/cards.ts          审批/提问卡片构造 + 按钮值解析
+src/replies.ts        引用回复路由表 + 中控回执抑制规则
 src/types.ts          手写的窄契约（只描述本插件用到的宿主接口）
 src/client/           设置页（settings.section）
 src/gateway/          暂停的网关源码（不构建）
