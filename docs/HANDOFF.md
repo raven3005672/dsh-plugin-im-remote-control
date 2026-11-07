@@ -97,7 +97,14 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 - **事件字段坑**：`im.message.receive_v1` 的事件里是 `message.message_type`，不是消息 API 的 `msg_type`；第一版读错字段导致图片被当成空文本，已修（`07b10c1`）。
 - 测试：`scripts/smoke-images.mjs` 覆盖 text/image/post/非法 JSON、四种签名、未知格式；`npm run verify` 全绿。
 
-**待真机验证**：往飞书发一张 PNG/JPEG，确认 `admitted` 日志、模型能看到图、回复正常；再发一张超过 10 MB 的图确认说明文本。
+**真机验证（2026-11-07 16:42）**：用户发了一张图（富文本 `post`，正文一个 `img`），日志：
+
+```
+16:42:46 attached 1 image(s) from om_x100b61da069070a0b01aab0a81f75cf
+16:42:47 admitted om_x100b61da069070a0b01aab0a81f75cf → session-76b2f6a2-… (direct)
+```
+
+16:42:54 机器人回复准确描述了图片内容（蓝色缎面一字肩裙、红黑折扇、bilibili 水印），说明 image part 已到模型。纯 `image` 消息走的是同一个解析器。
 
 ## 2026-11-07 引用回复路由修复（真机发现）
 
