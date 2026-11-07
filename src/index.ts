@@ -931,6 +931,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
       }
       images.push(part)
     }
+    if (images.length > 0) logLine('info', `attached ${String(images.length)} image(s) from ${messageId}`)
     if (trimmed === '' && images.length === 0) {
       await replyTo(messageId, chatId, '目前只支持文本和图片消息')
       return
