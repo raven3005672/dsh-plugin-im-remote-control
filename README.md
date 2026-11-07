@@ -283,6 +283,7 @@ src/client/           设置页（settings.section）
 src/gateway/          暂停的网关源码（不构建）
 src/platform/         平台适配（发现 host 端口、启动应用、登录服务）
 scripts/              build / smoke / rehearsal / dispatch / mode
+docs/DESIGN.md        设计文档：架构、状态机、卡片协议、时限与边界
 docs/HANDOFF.md       交接文档：设计决定、接口事实、未做事项
 ```
 

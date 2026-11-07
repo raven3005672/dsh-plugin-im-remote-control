@@ -50,7 +50,12 @@
     "verify": "npm run typecheck && npm run build && npm run smoke",
     "prepack": "npm run build",
     "rehearsal": "node scripts/rehearsal.mjs",
-    "prepublishOnly": "npm run verify"
+    "prepublishOnly": "npm run verify",
+    "smoke-approval": "node scripts/smoke-approval.mjs",
+    "smoke-cards": "node scripts/smoke-cards.mjs",
+    "smoke-replies": "node scripts/smoke-replies.mjs",
+    "smoke-images": "node scripts/smoke-images.mjs",
+    "smoke-client": "node scripts/smoke-client.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.5",

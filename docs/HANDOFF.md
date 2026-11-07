@@ -90,7 +90,7 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 
 飞书图片消息和富文本里的图片现在会作为 `image` content part 投给模型。
 
-- `src/inbound.ts`：`parseInbound(msg_type, content)` → `{ text, imageKeys }`；支持 `text` / `image` / `post`（zh_cn/en_us，标题 + 段落 + `img` 标签）。
+- `src/inbound.ts`：`parseInbound(message_type, content)` → `{ text, imageKeys }`（事件字段是 `message_type`，消息 API 才叫 `msg_type`）；支持 `text` / `image` / `post`（裸 body 或 zh_cn/en_us，标题 + 段落 + `img` 标签）。
 - `src/images.ts`：`sniffImageMediaType()` 按字节识别 PNG/JPEG/GIF/WebP；`MAX_IMAGE_BYTES = 10 MB`、`MAX_IMAGES_PER_MESSAGE = 4`。
 - `src/index.ts`：`downloadImage()` 用 `im.messageResource.get`（消息资源接口，不是 `im/v1/images`）流式下载；`admit()` 把图片拼进 prompt content；失败/超限在文本里留说明。
 - 模型门禁：宿主对带 image part 的 prompt 检查 `inputModalities`，不支持时报 `MODEL_DOES_NOT_SUPPORT_IMAGES`；插件回「当前会话模型不支持图片输入，请换用支持视觉的模型后重发」。当前 profile 的 `deepseek-flash` 声明了 `text + image`，`deepseek-v4-pro` 是纯文本。

@@ -18,7 +18,7 @@
 - 多租户 / 一个实例服务多个中控会话。
 - gateway 冷启动与外部网关（源码保留，未构建）。
 - 微信（代码/配置注释保留）。
-- 图片、文件、语音消息。
+- 文件、语音消息（图片已支持）。
 - 限频重试、消息分片。
 - 会话路由目录（按 chat 自动选目标会话）——仍在路线图。
 
@@ -72,6 +72,8 @@ dsh-plugin-im-remote-control（Host，运行在 dsh 进程内）
 | [`src/questions.ts`](../src/questions.ts) | 提问待决表：`user-questions/request` 竞速、多题聚合、5 分钟撤卡、`/answer` |
 | [`src/cards.ts`](../src/cards.ts) | 纯函数卡片构造（审批/提问/结果/关闭）+ 按钮值解析 |
 | [`src/replies.ts`](../src/replies.ts) | 引用回复路由表 + 中控回执抑制规则 |
+| [`src/inbound.ts`](../src/inbound.ts) | 入站内容解析：`text` / `image` / `post` |
+| [`src/images.ts`](../src/images.ts) | 图片签名嗅探 + 单张/单条上限 |
 | [`src/types.ts`](../src/types.ts) | 手写的窄 Host 契约 |
 | [`src/client/`](../src/client/) | 设置页（settings.section id `im-remote-control`） |
 | [`src/gateway/`](../src/gateway/) | PARKED：外部网关/冷启动，不构建 |
@@ -110,12 +112,13 @@ dsh-plugin-im-remote-control（Host，运行在 dsh 进程内）
 
 1. **chat allowlist**：`allowedChats` 非空时必须在里面。
 2. **发送者 allowlist**：`allowedOpenIds` 非空时必须在里面；两个 allowlist 都为空时插件根本不连飞书。
-3. 空文本 → 回「目前只支持文本消息」。
-4. `/whoami` → 回 open_id。
-5. `/approve` / `/deny` → `answerApproval()`。
-6. `/answer` → `answerQuestion()`。
-7. **引用回复**：`parent_id ?? root_id` 命中 `QuotedRoutes` → 投给源会话（带原 label）。
-8. 否则 → 中控会话。
+3. **图片**：`parseInbound()` 取出 `imageKeys`，逐个 `downloadImage()`；失败/超限/格式不支持写进 notes。
+4. 空文本且没有可用图片 → 回 notes（若有）或「目前只支持文本和图片消息」。
+5. `/whoami` → 回 open_id。
+6. `/approve` / `/deny` → `answerApproval()`。
+7. `/answer` → `answerQuestion()`。
+8. **引用回复**：`parent_id ?? root_id` 命中 `QuotedRoutes` → 投给源会话（带原 label）。
+9. 否则 → 中控会话。
 
 ### 4.3 `promptSession()`
 
@@ -126,13 +129,13 @@ dsh-plugin-im-remote-control（Host，运行在 dsh 进程内）
 
 ### 4.4 图片输入
 
-`parseInbound()`（[`src/inbound.ts`](../src/inbound.ts)）把 `msg_type` 解析成 `{ text, imageKeys }`：
+`parseInbound()`（[`src/inbound.ts`](../src/inbound.ts)）把消息类型解析成 `{ text, imageKeys }`。注意事件里的字段是 `message.message_type`，消息 API 才叫 `msg_type`：
 
-| `msg_type` | 处理 |
+| 类型 | 处理 |
 |---|---|
 | `text` | `content.text` |
 | `image` | `content.image_key` → 一个图片 key |
-| `post`（富文本） | `zh_cn`/`en_us` 的标题 + 各段文本拼成 text；`tag: 'img'` 收集 image key |
+| `post`（富文本） | 裸 body 或 `zh_cn`/`en_us` 包装：标题 + 各段文本拼成 text；`tag: 'img'` 收集 image key |
 | 其他（file/audio/media/sticker…） | text 与 image 都为空 → 「目前只支持文本和图片消息」 |
 
 `admit()` 对每个 key 调 `downloadImage()`：
@@ -329,7 +332,7 @@ forward(chatId, label, request, next)
 ```sh
 npm run typecheck
 npm run build
-npm run smoke          # 配置解析 + 客户端渲染
+npm run smoke          # 全部 smoke（配置解析 + 审批 + 卡片 + 引用 + 图片 + 客户端）
 npm run smoke-approval # 审批竞速 / 超时 / abort / 陌生 chat / 卡片结算
 npm run smoke-cards    # 卡片形状 / 按钮值 / 提问聚合 / 超时 / 路由动作
 npm run smoke-replies  # 引用路由表 + 回执抑制规则
@@ -339,7 +342,7 @@ npm run verify         # 以上全部
 npm run rehearsal      # 真实 mount：token 0600、401/403/413/202、卸载清理
 ```
 
-**真机验证记录**（2026-11-07）：审批卡片拒绝、提问卡片点击、引用回复路由、引用回复主聊天可见——均通过；`200340` 未出现。
+**真机验证记录**（2026-11-07）：审批卡片拒绝、提问卡片点击、引用回复路由、引用回复主聊天可见、图片输入（富文本 `post`）——均通过；`200340` 未出现。
 
 ## 15. 未交付与边界
 
