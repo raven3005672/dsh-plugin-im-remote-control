@@ -16,12 +16,27 @@ export interface PromptTextPart {
   readonly text: string
 }
 
+/** Image formats the Host accepts in a prompt. */
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+
+/** One image part of a prompt; the Host promotes the bytes to a durable reference. */
+export interface PromptImagePart {
+  readonly type: 'image'
+  readonly mediaType: ImageMediaType
+  /** Base64 encoding of the image bytes. */
+  readonly data: string
+  readonly name?: string
+}
+
+/** One part of a prompt submitted to the Session controller. */
+export type PromptContentPart = PromptTextPart | PromptImagePart
+
 /** Prompt admission request accepted by the Session controller. */
 export interface SessionPromptRequest {
   readonly requestId: string
   readonly sessionId: string
   readonly mode: 'queue' | 'steer'
-  readonly content: readonly PromptTextPart[]
+  readonly content: readonly PromptContentPart[]
   readonly clientTimeZone?: string
 }
 

@@ -120,9 +120,29 @@ dsh-plugin-im-remote-control（Host，运行在 dsh 进程内）
 ### 4.3 `promptSession()`
 
 - `requestId = feishu-<message_id>`，登记 `requests`。
-- 调用 `sessionController.prompt({ requestId, sessionId, mode: 'queue', content: [text], clientTimeZone: 'Asia/Shanghai' })`。
+- 调用 `sessionController.prompt({ requestId, sessionId, mode: 'queue', content: [text, ...images], clientTimeZone: 'Asia/Shanghai' })`。
 - 模型看到的 body：`[飞书] <open_id> 在 <chat_id> 说：\n<text>\n\n（回复方式：…）`。
 - 成功后贴表情（空闲 `OK`、忙 `OneSecond`，失败回落 `OK`）；失败回帖「投递失败：…」。
+
+### 4.4 图片输入
+
+`parseInbound()`（[`src/inbound.ts`](../src/inbound.ts)）把 `msg_type` 解析成 `{ text, imageKeys }`：
+
+| `msg_type` | 处理 |
+|---|---|
+| `text` | `content.text` |
+| `image` | `content.image_key` → 一个图片 key |
+| `post`（富文本） | `zh_cn`/`en_us` 的标题 + 各段文本拼成 text；`tag: 'img'` 收集 image key |
+| 其他（file/audio/media/sticker…） | text 与 image 都为空 → 「目前只支持文本和图片消息」 |
+
+`admit()` 对每个 key 调 `downloadImage()`：
+
+1. `feishu.im.messageResource.get({ path: { message_id, file_key }, params: { type: 'image' } })`——**必须用消息资源接口**；`im/v1/images` 只能下载机器人自己上传的图。
+2. 流式读取，超过 `MAX_IMAGE_BYTES`（10 MB）立即中止。
+3. `sniffImageMediaType()` 按字节识别 PNG/JPEG/GIF/WebP（不信 content-type）。
+4. 转 base64，作为 `{ type: 'image', mediaType, data, name }` 附在 prompt 的 content 里；宿主负责把字节提升成持久附件引用。
+
+边界：单条最多 4 张（`MAX_IMAGES_PER_MESSAGE`），多出的在文本里留一条「超出上限」说明；单张失败/格式不支持也留说明，不静默丢图。模型不支持图片时宿主拒绝，插件回「当前会话模型不支持图片输入，请换用支持视觉的模型后重发」。
 
 ## 5. 回合结果
 
@@ -285,6 +305,7 @@ forward(chatId, label, request, next)
 | 回帖文本上限 | 3500 字符 | 截断并标记 |
 | 引用路由 | 24h / 200 条 | 同 chat 才匹配 |
 | 消息去重 | 500 条 | 内存 LRU |
+| 图片 | 单张 10 MB、单条 4 张 | PNG/JPEG/GIF/WebP；超限/失败在文本里说明 |
 | dispatch 回执抑制 | 120s | 只作用于中控会话的非 quoted/dispatched 回合 |
 | 探测超时 | 10s | token / bot / 会话列表三次调用 |
 | 卡片按钮有效期 | 审批 120s / 提问 300s | 卡片 note 标注 |
@@ -299,6 +320,7 @@ forward(chatId, label, request, next)
 | 提问超时 | 撤卡，桌面继续等 |
 | WS 长连接失败 | 写 `long connection failed` 日志；SDK 自动重连 |
 | 配置缺失/类型错 | `ConfigError`，日志并停止该部分挂载 |
+| 模型不支持图片 | 宿主拒绝；插件回「当前会话模型不支持图片输入」 |
 | 插件重载 | 在途 `turns`、`requests`、审批/提问/引用表全丢；结果不会回帖 |
 | 飞书限频 | 429 / `99991400` / `230020`；插件不重试，只记日志 |
 
@@ -311,6 +333,7 @@ npm run smoke          # 配置解析 + 客户端渲染
 npm run smoke-approval # 审批竞速 / 超时 / abort / 陌生 chat / 卡片结算
 npm run smoke-cards    # 卡片形状 / 按钮值 / 提问聚合 / 超时 / 路由动作
 npm run smoke-replies  # 引用路由表 + 回执抑制规则
+npm run smoke-images   # 入站解析（text/image/post）+ 图片格式嗅探
 npm run smoke-client   # 设置页渲染
 npm run verify         # 以上全部
 npm run rehearsal      # 真实 mount：token 0600、401/403/413/202、卸载清理
@@ -322,7 +345,7 @@ npm run rehearsal      # 真实 mount：token 0600、401/403/413/202、卸载清
 
 - gateway 冷启动 / 外部网关（`src/gateway/` PARKED）。
 - 微信接入（注释保留；需要企业微信应用或微信客服 + 公网回调）。
-- 图片 / 文件 / 语音。
+- 文件（非图片）/ 语音；图片已支持，但仅 PNG/JPEG/GIF/WebP ≤10 MB。
 - 限频重试与消息分片。
 - 多实例 / 一个实例多中控会话。
 - 会话路由目录（按 chat 自动选目标会话）。

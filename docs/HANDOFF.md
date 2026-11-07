@@ -5,7 +5,7 @@
 ## 项目
 
 `~/github/dsh-plugin-im-remote-control` —— 飞书机器人远程控制 DSH 会话。
-TypeScript，esbuild 产物在 `lib/`。`npm run verify` = typecheck + build + smoke + smoke-approval + smoke-cards + smoke-client。
+TypeScript，esbuild 产物在 `lib/`。`npm run verify` = typecheck + build + smoke + smoke-approval + smoke-cards + smoke-replies + smoke-images + smoke-client。
 
 ## 当前可用的功能
 
@@ -21,6 +21,7 @@ TypeScript，esbuild 产物在 `lib/`。`npm run verify` = typecheck + build + s
 | 中控零输出（dispatch 成功后吞掉它的回执） | `dispatchAt` 120s 抑制窗口 | ✅ |
 | 审批转发（`ask` 档，**卡片按钮** / 飞书 `/approve` `/deny`） | `src/approval.ts` + `src/cards.ts` + `approval/request` 监听 | ✅ |
 | 提问转发（`ask_user_question`，**选项卡片** / `/answer`） | `src/questions.ts` + `src/cards.ts` + `user-questions/request` 监听 | ✅ |
+| 图片输入（`image` / `post`，image part） | `src/inbound.ts` + `src/images.ts` + `messageResource.get` | ✅ |
 | 设置页：中控会话 / 允许用户 / IM 勾选 / 飞书凭据 / 检测配置 | `src/client/Section.tsx` | ✅ |
 | gateway 模式（冷启动） | `gatewayEnabled()` 返回 false | ⏸ 暂停 |
 
@@ -84,6 +85,18 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 - **审批卡片**：`approval 768369 asked (bash)` → 卡片 `om_x100…` → 16:06:06 点「拒绝」→ `approval 768369 → rejected from card` → 工具被拦、目标文件未写 → 16:06:09 回帖（301 字符）；无 patch 错误。
 - `200340` 未出现（「卡片回传交互」长连接配置已生效）。
 - 待补：点「批准」路径（与拒绝共用同一回调，风险低）；桌面弹窗撤回的肉眼确认。
+
+## 2026-11-07 图片输入
+
+飞书图片消息和富文本里的图片现在会作为 `image` content part 投给模型。
+
+- `src/inbound.ts`：`parseInbound(msg_type, content)` → `{ text, imageKeys }`；支持 `text` / `image` / `post`（zh_cn/en_us，标题 + 段落 + `img` 标签）。
+- `src/images.ts`：`sniffImageMediaType()` 按字节识别 PNG/JPEG/GIF/WebP；`MAX_IMAGE_BYTES = 10 MB`、`MAX_IMAGES_PER_MESSAGE = 4`。
+- `src/index.ts`：`downloadImage()` 用 `im.messageResource.get`（消息资源接口，不是 `im/v1/images`）流式下载；`admit()` 把图片拼进 prompt content；失败/超限在文本里留说明。
+- 模型门禁：宿主对带 image part 的 prompt 检查 `inputModalities`，不支持时报 `MODEL_DOES_NOT_SUPPORT_IMAGES`；插件回「当前会话模型不支持图片输入，请换用支持视觉的模型后重发」。当前 profile 的 `deepseek-flash` 声明了 `text + image`，`deepseek-v4-pro` 是纯文本。
+- 测试：`scripts/smoke-images.mjs` 覆盖 text/image/post/非法 JSON、四种签名、未知格式；`npm run verify` 全绿。
+
+**待真机验证**：往飞书发一张 PNG/JPEG，确认 `admitted` 日志、模型能看到图、回复正常；再发一张超过 10 MB 的图确认说明文本。
 
 ## 2026-11-07 引用回复路由修复（真机发现）
 

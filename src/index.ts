@@ -43,11 +43,14 @@ import type { QuestionCommand, QuestionNotice } from './questions.ts'
 import { QuotedRoutes, suppressesReceipt } from './replies.ts'
 import type {
   HostContext,
-  PromptTextPart,
+  PromptContentPart,
+  PromptImagePart,
   RawConfig,
   SessionEventLike,
   SessionLike,
 } from './types.ts'
+import { parseInbound } from './inbound.ts'
+import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE, sniffImageMediaType } from './images.ts'
 
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -175,6 +178,8 @@ interface InboundMessage {
   readonly chatId: string
   readonly openId?: string
   readonly text: string
+  /** Image keys carried by the message, in message order. */
+  readonly imageKeys?: readonly string[]
   /** Message this one quotes or replies to, when Feishu supplies one. */
   readonly parentId?: string
   /** Thread root of a reply, used when no parent id is available. */
@@ -819,6 +824,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
     label: string | undefined,
     quoted: boolean,
     topLevel: boolean,
+    images: readonly PromptImagePart[],
   ): Promise<void> {
     const requestId = `feishu-${messageId}`
     // The prompt is what the model sees; label its origin so the Session log is honest.
@@ -832,22 +838,67 @@ function mount(ctx: HostContext, config: RawConfig): void {
       ...(quoted ? { quoted: true } : {}),
       ...(topLevel ? { topLevel: true } : {}),
     })
+    const parts: PromptContentPart[] = [{ type: 'text', text: body }, ...images]
     try {
       await ctx.sessionController.prompt({
         requestId,
         sessionId: targetSessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: body }] satisfies PromptTextPart[],
+        content: parts,
         clientTimeZone: 'Asia/Shanghai',
       }, new AbortController().signal)
     } catch (error) {
       requests.delete(requestId)
-      logLine('warn', `prompt rejected: ${String(error)}`)
-      await replyTo(messageId, chatId, `投递失败：${String(error).slice(0, 120)}`)
+      const details = (error as { details?: { reason?: string } } | null)?.details?.reason
+      const message = String(error)
+      logLine('warn', `prompt rejected: ${message}`)
+      const noVision = details === 'MODEL_DOES_NOT_SUPPORT_IMAGES'
+        || /does not support image input|MODEL_DOES_NOT_SUPPORT_IMAGES/iu.test(message)
+      await replyTo(messageId, chatId, noVision
+        ? '当前会话模型不支持图片输入，请换用支持视觉的模型后重发'
+        : `投递失败：${message.slice(0, 120)}`)
       return
     }
     logLine('info', `admitted ${messageId} → ${targetSessionId} (${mode})`)
     if (ack) await react(messageId, turns.has(targetSessionId) ? BUSY_EMOJI : IDLE_EMOJI)
+  }
+
+  /**
+   * Download one image carried by a message and turn it into a prompt part.
+   * @param messageId - message that carries the image; the resource API needs it.
+   * @param imageKey - Feishu image key.
+   * @returns the image part, or undefined when the download or format fails.
+   */
+  async function downloadImage(messageId: string, imageKey: string): Promise<PromptImagePart | undefined> {
+    try {
+      const response = await feishu.im.messageResource.get({
+        path: { message_id: messageId, file_key: imageKey },
+        params: { type: 'image' },
+      })
+      const stream = response.getReadableStream()
+      const chunks: Buffer[] = []
+      let total = 0
+      for await (const chunk of stream) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+        total += buffer.length
+        if (total > MAX_IMAGE_BYTES) {
+          stream.destroy()
+          logLine('warn', `image ${imageKey} exceeds ${String(MAX_IMAGE_BYTES)} bytes`)
+          return undefined
+        }
+        chunks.push(buffer)
+      }
+      const bytes = Buffer.concat(chunks)
+      const mediaType = sniffImageMediaType(bytes)
+      if (mediaType === undefined) {
+        logLine('warn', `image ${imageKey} has an unsupported format`)
+        return undefined
+      }
+      return { type: 'image', mediaType, data: bytes.toString('base64'), name: `feishu-${imageKey.slice(-8)}` }
+    } catch (error) {
+      logLine('warn', `image ${imageKey} download failed: ${String(error)}`)
+      return undefined
+    }
   }
 
   /**
@@ -864,11 +915,27 @@ function mount(ctx: HostContext, config: RawConfig): void {
       logLine('info', `ignored sender ${String(openId)} (not in allowedOpenIds)`)
       return
     }
-    if (text.trim() === '') {
-      await replyTo(messageId, chatId, '目前只支持文本消息')
+    const trimmed = text.trim()
+    const images: PromptImagePart[] = []
+    const notes: string[] = []
+    const keys = message.imageKeys ?? []
+    for (const key of keys) {
+      if (images.length >= MAX_IMAGES_PER_MESSAGE) {
+        notes.push(`（还有 ${String(keys.length - images.length)} 张图片超出单条上限，未附加）`)
+        break
+      }
+      const part = await downloadImage(messageId, key)
+      if (part === undefined) {
+        notes.push('（一张图片下载失败或格式不支持，未附加）')
+        continue
+      }
+      images.push(part)
+    }
+    if (trimmed === '' && images.length === 0) {
+      await replyTo(messageId, chatId, '目前只支持文本和图片消息')
       return
     }
-    if (text.trim() === '/whoami') {
+    if (trimmed === '/whoami') {
       await replyTo(messageId, chatId, openId ?? 'unknown')
       logLine('info', `whoami: ${openId ?? 'unknown'} in ${chatId}`)
       return
@@ -885,17 +952,19 @@ function mount(ctx: HostContext, config: RawConfig): void {
       return
     }
 
+    const promptText = [trimmed === '' ? '（发送了图片）' : trimmed, ...notes].join('\n')
+
     // A quote of a session's result answers that session, not the controller:
     // the controller never saw the question, so "3" alone would strand the turn.
     const quoted = (parentId === undefined ? undefined : quotedRoutes.take(parentId, chatId))
       ?? (rootId === undefined ? undefined : quotedRoutes.take(rootId, chatId))
     if (quoted !== undefined) {
       logLine('info', `quoted reply ${messageId} → ${quoted.sessionId}`)
-      await promptSession(quoted.sessionId, chatId, messageId, openId, text, quoted.label, true, true)
+      await promptSession(quoted.sessionId, chatId, messageId, openId, promptText, quoted.label, true, true, images)
       return
     }
 
-    await promptSession(sessionId, chatId, messageId, openId, text, undefined, false, false)
+    await promptSession(sessionId, chatId, messageId, openId, promptText, undefined, false, false, images)
   }
 
   // Approvals: a turn bound to a chat can be decided from Feishu. `prepend`
@@ -1202,6 +1271,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
           message_id: string
           chat_id: string
           chat_type?: string
+          msg_type?: string
           parent_id?: string
           root_id?: string
           content?: string
@@ -1221,13 +1291,8 @@ function mount(ctx: HostContext, config: RawConfig): void {
       const first = seen.values().next()
       if (seen.size > SEEN_LIMIT && first.value !== undefined) seen.delete(first.value)
 
-      let text = ''
-      try {
-        const content = JSON.parse(message.content ?? '{}') as { text?: string }
-        text = content.text ?? ''
-      } catch {
-        // Non-text payloads carry no `text` field; treated as empty below.
-      }
+      const parsed = parseInbound(message.msg_type, message.content)
+      let text = parsed.text
       for (const mention of message.mentions ?? []) {
         if (typeof mention.key === 'string') text = text.replaceAll(mention.key, '')
       }
@@ -1237,6 +1302,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
           messageId: message.message_id,
           chatId: message.chat_id,
           text,
+          ...(parsed.imageKeys.length === 0 ? {} : { imageKeys: parsed.imageKeys }),
           ...(senderOpenId === 'unknown' ? {} : { openId: senderOpenId }),
           ...(message.parent_id === undefined ? {} : { parentId: message.parent_id }),
           ...(message.root_id === undefined ? {} : { rootId: message.root_id }),

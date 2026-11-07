@@ -18,11 +18,12 @@
 | 分发接口 | 中控会话把任务投给任意会话，回复绑定由插件负责（Bearer token + chat allowlist） |
 | 审批转发 | `ask` 档会话的审批以**卡片**发到飞书，点按钮或回 `/approve` / `/deny` 决定，与桌面弹窗竞速 |
 | 卡片提问 | `ask_user_question`（选方案、计划确认）以**卡片**发到飞书，选项即按钮；多选/自定义用 `/answer` |
+| 图片输入 | 飞书图片/富文本图片下载后作为 `image` part 投给模型（PNG/JPEG/GIF/WebP，单张 ≤10 MB，单条最多 4 张） |
 | 引用回复路由 | 引用机器人某条结果回复时，消息回到**产生该结果的会话**，而不是中控 |
 | 设置页 | 中控会话、允许用户、飞书凭据（只写 + 掩码状态 + 清除）、渠道开关、配置探测（设置 → 远程控制） |
 | `/whoami` | 返回发送者 open_id，用于配置 allowlist |
 
-未交付：微信、gateway 冷启动、图片/文件、超限重试、多实例。
+未交付：文件（非图片）、微信、gateway 冷启动、超限重试、多实例。
 
 ## 工作方式
 
@@ -84,7 +85,7 @@ dsh plugin --profile <profile> add /path/to/dsh-plugin-im-remote-control
 
 1. 在[飞书开放平台](https://open.feishu.cn/app)创建**企业自建应用**，开启「机器人」能力。
 2. 权限：接收消息（`im:message`、`im:message.group_msg`）、以应用身份发消息（`im:message:send_as_bot`）。
-3. 事件订阅选**长连接**，订阅 `im.message.receive_v1`。这一步不需要公网地址。
+3. 事件订阅选**长连接**，订阅 `im.message.receive_v1`。这一步不需要公网地址。图片下载走「获取消息中的资源文件」，`im:message` 权限已够。
 4. **回调配置**页把 `card.action.trigger` 也设为**长连接**（这是「卡片回传交互」，不在事件订阅页）。少了这一步，点卡片按钮会报 `200340`。
 5. 发布版本，把机器人加进目标会话，或者在私聊里使用。
 6. 用 `/whoami` 拿到自己的 open_id，填进 `allowedUsers`。
@@ -204,7 +205,8 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 
 ## 限制与已知问题
 
-- **只支持文本**：图片、文件不会转发。
+- **图片**：支持图片消息和富文本里的图片，按字节识别 PNG/JPEG/GIF/WebP；单张上限 10 MB、单条最多 4 张。下载失败/格式不支持/超限时会在文本里留一条说明，不会静默丢图。**模型必须支持图片输入**（`inputModalities` 含 `image`），否则宿主会拒绝并回「当前会话模型不支持图片输入」。
+- **文件**（非图片）不会转发。
 - **回帖只发最后一步**的 assistant 文本，过程叙述不发；超过 3500 字符按开头截断（飞书文本上限是 150 KB，这个值是本插件自己的上限）。
 - 回合以 `error` / `aborted` / `blocked` 等原因结束且没有文本时，会回一句「回合出错/被中止」，而不是静默。
 - **一个实例只驱动一个 `sessionId`**；一个飞书应用只能有一条长连接（不要再同时跑外部 bridge）。
@@ -245,6 +247,7 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 | 飞书发消息没反应 | 日志里有没有 `admitted` / `ignored sender` / `ignored chat` |
 | 回合结束没有回帖 | 这条回合是不是从飞书或 dispatch 发起的；日志里的 `bound` / `sent` |
 | 引用回复没有回帖 | 日志有没有 `quoted reply` / `sent`；引用的结果是不是重载前发出的 |
+| 图片没有进模型 | 会话模型是否声明 `inputModalities` 含 `image`；日志有没有 `image … download failed` 或「不支持图片输入」 |
 | 点卡片按钮报 200340 | 飞书后台「回调配置 → card.action.trigger」是否长连接且已发布版本 |
 | 没有收到审批 | 会话是不是 `ask` 档；这条回合有没有绑定 chat；日志 `approval <id> asked` |
 | `/approve` 回「没有待审批的请求」 | id 抄错，或已超过 120 秒 |
@@ -257,13 +260,13 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 
 ```sh
 npm run typecheck   # tsc --noEmit
-npm run build       # lib/index.js + lib/client.js + lib/approval.js + lib/cards.js + lib/questions.js + lib/replies.js + lib/platform.mjs
-npm run smoke       # 配置解析 + 审批 + 卡片 + 提问聚合 + 引用路由 + 客户端渲染（无网络、无凭据）
+npm run build       # lib/index.js + lib/client.js + lib/approval.js + lib/cards.js + lib/questions.js + lib/replies.js + lib/inbound.js + lib/images.js + lib/platform.mjs
+npm run smoke       # 配置解析 + 审批 + 卡片 + 提问聚合 + 引用路由 + 入站/图片识别 + 客户端渲染
 npm run rehearsal   # 真实 mount 演练：假凭据 + 临时路径，验证 token/路由/鉴权/卸载（会连一次飞书）
 npm run verify      # typecheck + build + smoke
 ```
 
-产物：`lib/index.js`（Host）、`lib/client.js`（设置页）、`lib/approval.js`、`lib/cards.js`、`lib/questions.js`、`lib/replies.js`（状态机与纯函数，独立产物供测试）、`lib/platform.mjs`（脚本用的平台适配）；`icon.png` 是插件列表图标（256×256 PNG，宿主限制 ≤256 KiB）。`src/gateway/` 是暂停的网关源码，不构建、不随包发布。
+产物：`lib/index.js`（Host）、`lib/client.js`（设置页）、`lib/approval.js`、`lib/cards.js`、`lib/questions.js`、`lib/replies.js`、`lib/inbound.js`、`lib/images.js`（状态机与纯函数，独立产物供测试）、`lib/platform.mjs`（脚本用的平台适配）；`icon.png` 是插件列表图标（256×256 PNG，宿主限制 ≤256 KiB）。`src/gateway/` 是暂停的网关源码，不构建、不随包发布。
 
 目录：
 
@@ -273,6 +276,8 @@ src/approval.ts       审批状态机（短 id、超时、abort、竞速、撤�
 src/questions.ts      提问状态机（竞速、多题聚合、超时撤卡、/answer）
 src/cards.ts          审批/提问卡片构造 + 按钮值解析
 src/replies.ts        引用回复路由表 + 中控回执抑制规则
+src/inbound.ts        入站内容解析（text / image / post）
+src/images.ts         图片格式嗅探 + 大小/数量上限
 src/types.ts          手写的窄契约（只描述本插件用到的宿主接口）
 src/client/           设置页（settings.section）
 src/gateway/          暂停的网关源码（不构建）

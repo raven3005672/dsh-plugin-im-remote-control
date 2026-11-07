@@ -51,6 +51,8 @@ const SIDE_ENTRIES = [
   { source: 'src/cards.ts', outfile: 'lib/cards.js' },
   { source: 'src/questions.ts', outfile: 'lib/questions.js' },
   { source: 'src/replies.ts', outfile: 'lib/replies.js' },
+  { source: 'src/inbound.ts', outfile: 'lib/inbound.js' },
+  { source: 'src/images.ts', outfile: 'lib/images.js' },
 ]
 
 for (const entry of SIDE_ENTRIES) {
