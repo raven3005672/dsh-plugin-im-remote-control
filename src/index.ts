@@ -933,7 +933,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
     }
     if (images.length > 0) logLine('info', `attached ${String(images.length)} image(s) from ${messageId}`)
     if (trimmed === '' && images.length === 0) {
-      await replyTo(messageId, chatId, '目前只支持文本和图片消息')
+      await replyTo(messageId, chatId, notes.length > 0 ? notes.join('\n') : '目前只支持文本和图片消息')
       return
     }
     if (trimmed === '/whoami') {
@@ -1272,6 +1272,8 @@ function mount(ctx: HostContext, config: RawConfig): void {
           message_id: string
           chat_id: string
           chat_type?: string
+          /** The event spells it `message_type`; the message API spells it `msg_type`. */
+          message_type?: string
           msg_type?: string
           parent_id?: string
           root_id?: string
@@ -1292,7 +1294,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
       const first = seen.values().next()
       if (seen.size > SEEN_LIMIT && first.value !== undefined) seen.delete(first.value)
 
-      const parsed = parseInbound(message.msg_type, message.content)
+      const parsed = parseInbound(message.message_type ?? message.msg_type, message.content)
       let text = parsed.text
       for (const mention of message.mentions ?? []) {
         if (typeof mention.key === 'string') text = text.replaceAll(mention.key, '')
