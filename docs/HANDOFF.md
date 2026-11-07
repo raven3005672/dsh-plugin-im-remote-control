@@ -85,6 +85,20 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 - `200340` 未出现（「卡片回传交互」长连接配置已生效）。
 - 待补：点「批准」路径（与拒绝共用同一回调，风险低）；桌面弹窗撤回的肉眼确认。
 
+## 2026-11-07 引用回复路由修复（真机发现）
+
+**现象**：审批卡片测试里点了「拒绝」，飞书收到 `【审批卡片测试】…` 的结果（执行会话问「用哪种方式？」）。用户**引用**这条消息回复「3」，结果中控会话收到了「3」——中控不知道它对应哪个执行会话，流程中断。
+
+**原因**：所有入站文本都投给中控；`im.message.receive_v1` 里的 `parent_id`/`root_id`（引用/线程关系）被忽略，结果消息的 message_id 也没有留档。
+
+**修复**：
+- `src/replies.ts`：`QuotedRoutes`，出站结果 message_id → `{ sessionId, chatId, label }`，24h / 200 条上限，跨 chat 不匹配。
+- `sendToChat` / `replyTo` 返回 Feishu message_id；`turn/end` 发完结果后登记。
+- 入站解析 `parent_id ?? root_id`；`admit()` 命中路由时把消息投给源会话（带原 label），不再进中控。`promptSession()` 抽出复用。
+- `scripts/smoke-replies.mjs`：命中 / 跨 chat / 未知 / 过期 / 淘汰 / 可选 label。
+
+**已验证**：`npm run verify` 全绿。**待真机复测**：重载后再产生一条结果，引用它回复，确认日志 `quoted reply … → session-…` 且源会话收到内容。
+
 ## 2026-11-06 审查修复（Claude Code + 本 agent 双审）
 
 按开发手册（`docs/cordis-tutorial`、`package-surface`、`defensive-patterns`、`adding-a-settings-card`）审了一轮，修掉的：

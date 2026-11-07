@@ -50,6 +50,7 @@ const SIDE_ENTRIES = [
   { source: 'src/approval.ts', outfile: 'lib/approval.js' },
   { source: 'src/cards.ts', outfile: 'lib/cards.js' },
   { source: 'src/questions.ts', outfile: 'lib/questions.js' },
+  { source: 'src/replies.ts', outfile: 'lib/replies.js' },
 ]
 
 for (const entry of SIDE_ENTRIES) {

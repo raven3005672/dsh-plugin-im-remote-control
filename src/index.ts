@@ -40,6 +40,7 @@ import {
 } from './cards.ts'
 import { parseAnswerCommand, QuestionRegistry } from './questions.ts'
 import type { QuestionCommand, QuestionNotice } from './questions.ts'
+import { QuotedRoutes } from './replies.ts'
 import type {
   HostContext,
   PromptTextPart,
@@ -174,6 +175,10 @@ interface InboundMessage {
   readonly chatId: string
   readonly openId?: string
   readonly text: string
+  /** Message this one quotes or replies to, when Feishu supplies one. */
+  readonly parentId?: string
+  /** Thread root of a reply, used when no parent id is available. */
+  readonly rootId?: string
 }
 
 /** One probe result rendered by the Settings page. */
@@ -434,6 +439,8 @@ function mount(ctx: HostContext, config: RawConfig): void {
   /** Reply state per Session: only turns this plugin admitted are answered. */
   interface TurnState { chatId: string; requestId: string; text: string; messageId?: string; label?: string; dispatched: boolean }
   const turns = new Map<string, TurnState>()
+  /** Result messages a quoted reply can be routed back from, by message id. */
+  const quotedRoutes = new QuotedRoutes(24 * 60 * 60 * 1_000, 200)
   /** Long-connection handle in direct mode; undefined when a gateway owns it. */
   let wsClient: Lark.WSClient | undefined
 
@@ -518,13 +525,15 @@ function mount(ctx: HostContext, config: RawConfig): void {
    * @param chatId - target chat.
    * @param text - message body.
    */
-  async function sendToChat(chatId: string, text: string): Promise<void> {
+  async function sendToChat(chatId: string, text: string): Promise<string | undefined> {
     const body = truncate(text)
-    await feishu.im.message.create({
+    const response = await feishu.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: body }) },
     })
+    const messageId = (response as { data?: { message_id?: string } }).data?.message_id
     logLine('info', `sent ${String(body.length)} chars to ${chatId}`)
+    return messageId
   }
 
     /** Mark an accepted message with a Feishu emoji reaction instead of a reply. */
@@ -551,18 +560,19 @@ function mount(ctx: HostContext, config: RawConfig): void {
    * @param chatId - target chat.
    * @param text - short status text.
    */
-  async function replyTo(messageId: string | undefined, chatId: string, text: string): Promise<void> {
+  async function replyTo(messageId: string | undefined, chatId: string, text: string): Promise<string | undefined> {
     try {
       if (messageId !== undefined && messageId !== '') {
-        await feishu.im.message.reply({
+        const response = await feishu.im.message.reply({
           path: { message_id: messageId },
           data: { msg_type: 'text', content: JSON.stringify({ text: truncate(text) }) },
         })
-      } else {
-        await sendToChat(chatId, text)
+        return (response as { data?: { message_id?: string } }).data?.message_id
       }
+      return await sendToChat(chatId, text)
     } catch (error) {
       logLine('warn', `reply failed: ${String(error)}`)
+      return undefined
     }
   }
 
@@ -792,11 +802,56 @@ function mount(ctx: HostContext, config: RawConfig): void {
   }
 
   /**
+   * Prompt one Session from a chat message and acknowledge it.
+   * @param targetSessionId - session the message belongs to.
+   * @param chatId - chat the message came from.
+   * @param messageId - triggering message id, used as the request id and reply target.
+   * @param openId - sender open_id, when Feishu supplied one.
+   * @param text - message body.
+   * @param label - session label to prepend to the turn result, when known.
+   */
+  async function promptSession(
+    targetSessionId: string,
+    chatId: string,
+    messageId: string,
+    openId: string | undefined,
+    text: string,
+    label: string | undefined,
+  ): Promise<void> {
+    const requestId = `feishu-${messageId}`
+    // The prompt is what the model sees; label its origin so the Session log is honest.
+    const body = `[飞书] ${openId ?? 'unknown'} 在 ${chatId} 说：\n${text.trim()}\n\n（回复方式：飞书 chat_id=${chatId}，message_id=${messageId}）`
+
+    requests.set(requestId, {
+      chatId,
+      messageId,
+      ...(label === undefined ? {} : { label }),
+      dispatched: false,
+    })
+    try {
+      await ctx.sessionController.prompt({
+        requestId,
+        sessionId: targetSessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: body }] satisfies PromptTextPart[],
+        clientTimeZone: 'Asia/Shanghai',
+      }, new AbortController().signal)
+    } catch (error) {
+      requests.delete(requestId)
+      logLine('warn', `prompt rejected: ${String(error)}`)
+      await replyTo(messageId, chatId, `投递失败：${String(error).slice(0, 120)}`)
+      return
+    }
+    logLine('info', `admitted ${messageId} → ${targetSessionId} (${mode})`)
+    if (ack) await react(messageId, turns.has(targetSessionId) ? BUSY_EMOJI : IDLE_EMOJI)
+  }
+
+  /**
    * Admit one message as a Session prompt and acknowledge it.
    * @param message - inbound message in either transport.
    */
   async function admit(message: InboundMessage): Promise<void> {
-    const { messageId, chatId, openId, text } = message
+    const { messageId, chatId, openId, text, parentId, rootId } = message
     if (allowedChats.size > 0 && !allowedChats.has(chatId)) {
       logLine('info', `ignored chat ${chatId} (not in allowedChats)`)
       return
@@ -826,27 +881,17 @@ function mount(ctx: HostContext, config: RawConfig): void {
       return
     }
 
-    const requestId = `feishu-${messageId}`
-    // The prompt is what the model sees; label its origin so the Session log is honest.
-    const body = `[飞书] ${openId ?? 'unknown'} 在 ${chatId} 说：\n${text.trim()}\n\n（回复方式：飞书 chat_id=${chatId}，message_id=${messageId}）`
-
-    requests.set(requestId, { chatId, messageId, dispatched: false })
-    try {
-      await ctx.sessionController.prompt({
-        requestId,
-        sessionId,
-        mode: 'queue',
-        content: [{ type: 'text', text: body }] satisfies PromptTextPart[],
-        clientTimeZone: 'Asia/Shanghai',
-      }, new AbortController().signal)
-    } catch (error) {
-      requests.delete(requestId)
-      logLine('warn', `prompt rejected: ${String(error)}`)
-      await replyTo(messageId, chatId, `投递失败：${String(error).slice(0, 120)}`)
+    // A quote of a session's result answers that session, not the controller:
+    // the controller never saw the question, so "3" alone would strand the turn.
+    const quoted = (parentId === undefined ? undefined : quotedRoutes.take(parentId, chatId))
+      ?? (rootId === undefined ? undefined : quotedRoutes.take(rootId, chatId))
+    if (quoted !== undefined) {
+      logLine('info', `quoted reply ${messageId} → ${quoted.sessionId}`)
+      await promptSession(quoted.sessionId, chatId, messageId, openId, text, quoted.label)
       return
     }
-    logLine('info', `admitted ${messageId} → ${sessionId} (${mode})`)
-    if (ack) await react(messageId, turns.has(sessionId) ? BUSY_EMOJI : IDLE_EMOJI)
+
+    await promptSession(sessionId, chatId, messageId, openId, text, undefined)
   }
 
   // Approvals: a turn bound to a chat can be decided from Feishu. `prepend`
@@ -920,7 +965,16 @@ function mount(ctx: HostContext, config: RawConfig): void {
               ? ''
               : `【${state.label ?? '本会话'}】${describeTurnEnd(reason)}`)
         if (replyOnTurnEnd && !receipt && body !== '') {
-          void replyTo(state.messageId, state.chatId, body).catch((error: unknown) => {
+          void replyTo(state.messageId, state.chatId, body).then((sentId) => {
+            // A quoted reply to this result belongs to the session that produced it.
+            if (sentId !== undefined) {
+              quotedRoutes.remember(sentId, {
+                sessionId: session.id,
+                chatId: state.chatId,
+                ...(state.label === undefined ? {} : { label: state.label }),
+              })
+            }
+          }).catch((error: unknown) => {
             logLine('warn', `send failed: ${String(error)}`)
           })
         }
@@ -1134,6 +1188,8 @@ function mount(ctx: HostContext, config: RawConfig): void {
           message_id: string
           chat_id: string
           chat_type?: string
+          parent_id?: string
+          root_id?: string
           content?: string
           mentions?: { key?: string }[]
         }
@@ -1168,6 +1224,8 @@ function mount(ctx: HostContext, config: RawConfig): void {
           chatId: message.chat_id,
           text,
           ...(senderOpenId === 'unknown' ? {} : { openId: senderOpenId }),
+          ...(message.parent_id === undefined ? {} : { parentId: message.parent_id }),
+          ...(message.root_id === undefined ? {} : { rootId: message.root_id }),
         })
       } catch (error) {
         logLine('warn', `admit failed: ${String(error)}`)
