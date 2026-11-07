@@ -83,3 +83,34 @@ export class QuotedRoutes {
     }
   }
 }
+
+/** One turn's receipt-suppression inputs. */
+export interface ReceiptInput {
+  /** The turn was started by a dispatch (its result is the visible receipt). */
+  readonly dispatched: boolean
+  /** The turn came from a quoted reply, which is never a dispatch receipt. */
+  readonly quoted: boolean
+  /** The turn runs in the controller session that admitted the message. */
+  readonly isController: boolean
+  /** When this chat last dispatched, if it did. */
+  readonly dispatchedAt: number | undefined
+  /** Current time. */
+  readonly now: number
+  /** How long a dispatch suppresses the controller's echo. */
+  readonly windowMs: number
+}
+
+/**
+ * Whether a turn result is the controller's dispatch echo and must stay silent.
+ *
+ * Only the controller's immediate turn is a receipt. A dispatched executor's
+ * result is the answer the chat asked for, and a quoted reply's result answers
+ * the reader directly — swallowing either hides a turn they are waiting on.
+ * @param input - turn, session and dispatch-window facts.
+ * @returns true when the result should not be posted.
+ */
+export function suppressesReceipt(input: ReceiptInput): boolean {
+  if (input.dispatched || input.quoted || !input.isController) return false
+  if (input.dispatchedAt === undefined) return false
+  return input.dispatchedAt > input.now - input.windowMs
+}

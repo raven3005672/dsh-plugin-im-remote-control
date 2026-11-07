@@ -40,7 +40,7 @@ import {
 } from './cards.ts'
 import { parseAnswerCommand, QuestionRegistry } from './questions.ts'
 import type { QuestionCommand, QuestionNotice } from './questions.ts'
-import { QuotedRoutes } from './replies.ts'
+import { QuotedRoutes, suppressesReceipt } from './replies.ts'
 import type {
   HostContext,
   PromptTextPart,
@@ -433,11 +433,11 @@ function mount(ctx: HostContext, config: RawConfig): void {
   const seen = new Set<string>()
 
   /** Request ids this plugin admitted, mapped to the chat that asked. */
-  const requests = new Map<string, { chatId: string; messageId?: string; label?: string; dispatched: boolean }>()
+  const requests = new Map<string, { chatId: string; messageId?: string; label?: string; dispatched: boolean; quoted?: boolean; topLevel?: boolean }>()
   /** Chats where a dispatch already produced the visible receipt. */
   const dispatchAt = new Map<string, number>()
   /** Reply state per Session: only turns this plugin admitted are answered. */
-  interface TurnState { chatId: string; requestId: string; text: string; messageId?: string; label?: string; dispatched: boolean }
+  interface TurnState { chatId: string; requestId: string; text: string; messageId?: string; label?: string; dispatched: boolean; quoted?: boolean; topLevel?: boolean }
   const turns = new Map<string, TurnState>()
   /** Result messages a quoted reply can be routed back from, by message id. */
   const quotedRoutes = new QuotedRoutes(24 * 60 * 60 * 1_000, 200)
@@ -817,6 +817,8 @@ function mount(ctx: HostContext, config: RawConfig): void {
     openId: string | undefined,
     text: string,
     label: string | undefined,
+    quoted: boolean,
+    topLevel: boolean,
   ): Promise<void> {
     const requestId = `feishu-${messageId}`
     // The prompt is what the model sees; label its origin so the Session log is honest.
@@ -827,6 +829,8 @@ function mount(ctx: HostContext, config: RawConfig): void {
       messageId,
       ...(label === undefined ? {} : { label }),
       dispatched: false,
+      ...(quoted ? { quoted: true } : {}),
+      ...(topLevel ? { topLevel: true } : {}),
     })
     try {
       await ctx.sessionController.prompt({
@@ -887,11 +891,11 @@ function mount(ctx: HostContext, config: RawConfig): void {
       ?? (rootId === undefined ? undefined : quotedRoutes.take(rootId, chatId))
     if (quoted !== undefined) {
       logLine('info', `quoted reply ${messageId} → ${quoted.sessionId}`)
-      await promptSession(quoted.sessionId, chatId, messageId, openId, text, quoted.label)
+      await promptSession(quoted.sessionId, chatId, messageId, openId, text, quoted.label, true, true)
       return
     }
 
-    await promptSession(sessionId, chatId, messageId, openId, text, undefined)
+    await promptSession(sessionId, chatId, messageId, openId, text, undefined, false, false)
   }
 
   // Approvals: a turn bound to a chat can be decided from Feishu. `prepend`
@@ -929,7 +933,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
         const entry = requestId === undefined ? undefined : requests.get(requestId)
         if (requestId !== undefined && entry !== undefined) {
           requests.delete(requestId)
-          turns.set(session.id, { chatId: entry.chatId, requestId, text: '', ...(entry.label === undefined ? {} : { label: entry.label }), ...(entry.messageId === undefined ? {} : { messageId: entry.messageId }), dispatched: entry.dispatched })
+          turns.set(session.id, { chatId: entry.chatId, requestId, text: '', ...(entry.label === undefined ? {} : { label: entry.label }), ...(entry.messageId === undefined ? {} : { messageId: entry.messageId }), dispatched: entry.dispatched, ...(entry.quoted === true ? { quoted: true } : {}), ...(entry.topLevel === true ? { topLevel: true } : {}) })
           logLine('info', `bound '${session.id}' to ${entry.chatId}`)
         }
         break
@@ -955,8 +959,18 @@ function mount(ctx: HostContext, config: RawConfig): void {
         turns.delete(session.id)
         const text = state.text.trim()
         const reason = event.data?.reason?.kind
-        const receipt = !state.dispatched && (dispatchAt.get(state.chatId) ?? 0) > Date.now() - 120_000
-        if (receipt) dispatchAt.delete(state.chatId)
+        const receipt = suppressesReceipt({
+          dispatched: state.dispatched,
+          quoted: state.quoted === true,
+          isController: session.id === sessionId,
+          dispatchedAt: dispatchAt.get(state.chatId),
+          now: Date.now(),
+          windowMs: 120_000,
+        })
+        if (receipt) {
+          dispatchAt.delete(state.chatId)
+          logLine('info', `suppressed controller receipt in ${state.chatId}`)
+        }
         // An empty successful turn needs no post; a failed or cancelled one
         // must say so, otherwise the chat sees a receipt and then silence.
         const body = text !== ''
@@ -965,7 +979,7 @@ function mount(ctx: HostContext, config: RawConfig): void {
               ? ''
               : `【${state.label ?? '本会话'}】${describeTurnEnd(reason)}`)
         if (replyOnTurnEnd && !receipt && body !== '') {
-          void replyTo(state.messageId, state.chatId, body).then((sentId) => {
+          void replyTo(state.topLevel === true ? undefined : state.messageId, state.chatId, body).then((sentId) => {
             // A quoted reply to this result belongs to the session that produced it.
             if (sentId !== undefined) {
               quotedRoutes.remember(sentId, {

@@ -108,6 +108,10 @@ admitted om_x100b61d980502cb4b0fab745200489d → session-9ce7213e-8bb6-4271-bfbe
 
 中控会话没有收到这条回复，路由生效。注意：只有**重载之后**发出的结果消息才在路由表里（24h / 200 条），更早的结果引用仍会进中控。
 
+**续（2026-11-07 16:17，用户反馈「session 收到了 3 但没回飞书」）**：查聊天记录发现回复其实发了，但 `im.message.reply` 把结果挂成了「用户那条 3 的线程回复」，飞书折叠在线程里，主聊天看不到。改为：**引用回复产生的回合结果直接发主聊天**（`replyTo(undefined, …)`，即 `sendToChat`），不再挂线程。验证：16:17:53 引用 → 16:17:55 `sent 47 chars`，消息 API 里该消息 `parent_id` 为空（TOP），主聊天可见。
+
+顺带确认：之前多条引用回复的结果其实都发出去了，只是都藏在以用户消息为父的线程里；现在改为顶层，`sent` 日志也回来了。
+
 ## 2026-11-06 审查修复（Claude Code + 本 agent 双审）
 
 按开发手册（`docs/cordis-tutorial`、`package-surface`、`defensive-patterns`、`adding-a-settings-card`）审了一轮，修掉的：

@@ -2,7 +2,7 @@
 // produced the quoted message, only within its own chat, and only while fresh.
 import assert from 'node:assert/strict'
 
-const { QuotedRoutes } = await import('../lib/replies.js')
+const { QuotedRoutes, suppressesReceipt } = await import('../lib/replies.js')
 
 const route = (sessionId = 'session-a', chatId = 'chat-1', label = '任务') => ({ sessionId, chatId, label })
 
@@ -46,5 +46,17 @@ const route = (sessionId = 'session-a', chatId = 'chat-1', label = '任务') => 
   assert.equal(hit.sessionId, 'session-a')
   assert.ok(!('label' in hit), 'no label when the result had none')
 }
+
+// --- only the controller's own echo is a dispatch receipt --------------------
+const receipt = (overrides = {}) => ({
+  dispatched: false, quoted: false, isController: true,
+  dispatchedAt: 1_000, now: 2_000, windowMs: 120_000, ...overrides,
+})
+assert.equal(suppressesReceipt(receipt()), true, 'the controller echo inside the window is suppressed')
+assert.equal(suppressesReceipt(receipt({ quoted: true })), false, 'a quoted reply is never a receipt')
+assert.equal(suppressesReceipt(receipt({ isController: false })), false, 'an executor is never a receipt')
+assert.equal(suppressesReceipt(receipt({ dispatched: true })), false, 'a dispatched turn already is the receipt')
+assert.equal(suppressesReceipt(receipt({ dispatchedAt: undefined })), false, 'no dispatch, nothing to suppress')
+assert.equal(suppressesReceipt(receipt({ now: 1_000 + 120_000 + 1 })), false, 'the window has passed')
 
 console.log('smoke-replies ok')
