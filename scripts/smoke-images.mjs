@@ -31,6 +31,15 @@ assert.deepEqual(parseInbound('image', JSON.stringify({})), { text: '', imageKey
   assert.deepEqual(parseInbound('post', content), { text: '标题\n第一段 链接\n看图：', imageKeys: ['img_a', 'img_b'] })
 }
 
+// --- received post: bare body, no locale wrapper ---------------------------
+{
+  const content = JSON.stringify({
+    title: '',
+    content: [[{ tag: 'text', text: '看图：' }, { tag: 'img', image_key: 'img_c' }]],
+  })
+  assert.deepEqual(parseInbound('post', content), { text: '看图：', imageKeys: ['img_c'] })
+}
+
 // --- rich text falls back to en_us -----------------------------------------
 {
   const content = JSON.stringify({ en_us: { content: [[{ tag: 'text', text: 'hello' }]] } })

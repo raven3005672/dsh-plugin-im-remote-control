@@ -50,8 +50,10 @@ export function parseInbound(msgType: string | undefined, raw: string | undefine
   }
 
   if (msgType === 'post') {
-    const post = parsed as { zh_cn?: PostBody; en_us?: PostBody }
-    const body = post.zh_cn ?? post.en_us
+    // A received post is a bare body ({ title, content }); the send API (and
+    // some normalized payloads) wrap it per locale. Accept both shapes.
+    const post = parsed as PostBody & { zh_cn?: PostBody; en_us?: PostBody }
+    const body = post.zh_cn ?? post.en_us ?? post
     if (body === undefined) return { text: '', imageKeys: [] }
     const lines: string[] = []
     if (typeof body.title === 'string' && body.title !== '') lines.push(body.title)
