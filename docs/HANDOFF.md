@@ -94,6 +94,7 @@ ctx.on('approval/request', async (req, next) => ApprovalOutcome)
 - `src/images.ts`：`sniffImageMediaType()` 按字节识别 PNG/JPEG/GIF/WebP；`MAX_IMAGE_BYTES = 10 MB`、`MAX_IMAGES_PER_MESSAGE = 4`。
 - `src/index.ts`：`downloadImage()` 用 `im.messageResource.get`（消息资源接口，不是 `im/v1/images`）流式下载；`admit()` 把图片拼进 prompt content；失败/超限在文本里留说明。
 - 模型门禁：宿主对带 image part 的 prompt 检查 `inputModalities`，不支持时报 `MODEL_DOES_NOT_SUPPORT_IMAGES`；插件回「当前会话模型不支持图片输入，请换用支持视觉的模型后重发」。当前 profile 的 `deepseek-flash` 声明了 `text + image`，`deepseek-v4-pro` 是纯文本。
+- **事件字段坑**：`im.message.receive_v1` 的事件里是 `message.message_type`，不是消息 API 的 `msg_type`；第一版读错字段导致图片被当成空文本，已修（`07b10c1`）。
 - 测试：`scripts/smoke-images.mjs` 覆盖 text/image/post/非法 JSON、四种签名、未知格式；`npm run verify` 全绿。
 
 **待真机验证**：往飞书发一张 PNG/JPEG，确认 `admitted` 日志、模型能看到图、回复正常；再发一张超过 10 MB 的图确认说明文本。
