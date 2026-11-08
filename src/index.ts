@@ -106,8 +106,8 @@ class ConfigError extends Error {
   }
 }
 
-/** Accepted-and-idle marker; every tenant supports it. */
-const IDLE_EMOJI = 'OK'
+/** Accepted-and-idle marker; `Get` is Feishu's hand-reaching reaction. */
+const IDLE_EMOJI = 'Get'
 
 /** Queued-behind-a-running-turn marker (飞书「稍等」). */
 const BUSY_EMOJI = 'OneSecond'
