@@ -14,7 +14,7 @@
 | 私聊 / 群聊 | 私聊直接处理；群聊必须 @ 机器人 |
 | 消息进会话 | 走 `sessionController.prompt`，模型看到的与桌面输入框一致，不绕过 session log |
 | 回合回帖 | 回合结束把**最后一步**的 assistant 文本发回聊天；`dispatch` 来的任务带 `【会话名】` 首行 |
-| 表情回执 | 收到消息贴 `OK`；会话正忙时贴 `OneSecond` |
+| 表情回执 | 收到消息贴 `Get`；会话正忙时贴 `OneSecond` |
 | 分发接口 | 中控会话把任务投给任意会话，回复绑定由插件负责（Bearer token + chat allowlist） |
 | 审批转发 | `ask` 档会话的审批以**卡片**发到飞书，点按钮或回 `/approve` / `/deny` 决定，与桌面弹窗竞速 |
 | 卡片提问 | `ask_user_question`（选方案、计划确认）以**卡片**发到飞书，选项即按钮；多选/自定义用 `/answer` |
