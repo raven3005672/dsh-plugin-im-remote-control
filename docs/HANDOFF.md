@@ -204,6 +204,19 @@ admitted om_x100b61d980502cb4b0fab745200489d → session-9ce7213e-8bb6-4271-bfbe
 - 飞书应用：`cli_<app-id>`（自建应用 App ID，在飞书开放平台查看），机器人名「DSH总控」。
 - 中控会话：`session-<controller-id>`（本机 profile 里配置的 `controllerSessionId`）。
 
+## 2026-11-19 dispatch token 丢失与自愈
+
+**现象**：`~/.dsh/im-remote-control.token` 丢失，`dispatch.mjs` 直接退出；插件仍正常收消息/回帖（15:13 还有 `admitted`），只有派发通道断了。
+
+**根因**：token 是**每个挂载随机生成**的，但文件是**单点共享**的。日志里 13:50–14:20 有多次挂载：后一个挂载会覆盖前一个的 token；某个挂载被 dispose 时，如果文件里正好是它自己的 token，它会把文件删掉——还活着的实例内存里是另一个 token，于是「文件没了/不是我的」。另外，外部 `rm` 或清理脚本也会造成同样结果。本次日志没有 `token write failed`，所以不是写失败。
+
+**影响**：只有 dispatch / 外部网关受影响（脚本读不到 token 或 401）；收消息、回帖、审批、提问、图片都不依赖 token。安全上是 fail-closed，不会误放行。
+
+**修复**：
+- `ensureToken()`：文件缺失或为空时写回本实例的 token；文件是另一个非空 token 时只记一次 warn，不抢占。
+- 两个触发点：`admit()`（任意允许的入站消息）和 60s 看门狗（空闲也能自愈）。
+- `npm run verify` 全绿；当前运行实例是重启后的新 mount，token 已恢复；自愈代码在下一次重启/重挂载后生效。
+
 ## 发布（2026-11-07）
 
 - **0.2.0** 已通过 `v0.2.0` tag → GitHub Actions → npm Trusted Publishing 发布（SLSA provenance，14 个文件 / 241 KB，`latest = 0.2.0`）。

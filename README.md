@@ -232,7 +232,7 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 | 东西 | 位置 |
 |---|---|
 | 日志 | `$DSH_HOME/im-remote-control.log`（默认 `~/.dsh/im-remote-control.log`），0600 |
-| dispatch token | `$DSH_HOME/im-remote-control.token`，0600，挂载时写入、卸载时删除 |
+| dispatch token | `$DSH_HOME/im-remote-control.token`，0600；挂载时写入、卸载时删除，丢失时由下一条入站消息或 60s 看门狗重写 |
 | 共享配置 | `$DSH_HOME/im-remote-control.json` |
 | 持久化会话 | DSH 自己的 `$DSH_HOME/sessions/` |
 
@@ -251,7 +251,7 @@ DSH 的 GUI 有独立的浏览器认证（回环绑定、每进程随机启动 t
 | 点卡片按钮报 200340 | 飞书后台「回调配置 → card.action.trigger」是否长连接且已发布版本 |
 | 没有收到审批 | 会话是不是 `ask` 档；这条回合有没有绑定 chat；日志 `approval <id> asked` |
 | `/approve` 回「没有待审批的请求」 | id 抄错，或已超过 120 秒 |
-| dispatch 返回 401 | token 文件不存在或已轮换；重启 DSH 或重读文件 |
+| dispatch 返回 401 / token 文件不存在 | 插件会在下一条允许的消息或 60 秒内自动重写 token（日志 `token file restored`）；仍失败再重启 DSH |
 | 日志 `no access control configured` | 先配 `allowedChats` 或 `allowedUsers` 再重启 |
 
 启停：把行 `disabled: true`（或 `enabled: false` 配置项）后重启；彻底移除用 `dsh plugin --profile <profile> remove dsh-plugin-im-remote-control`。

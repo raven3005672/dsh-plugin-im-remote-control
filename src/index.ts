@@ -915,6 +915,9 @@ function mount(ctx: HostContext, config: RawConfig): void {
       logLine('info', `ignored sender ${String(openId)} (not in allowedOpenIds)`)
       return
     }
+    // An allowed message proves the plugin is alive: restore a deleted token
+    // before the reply so the controller can dispatch again.
+    ensureToken()
     const trimmed = text.trim()
     const images: PromptImagePart[] = []
     const notes: string[] = []
@@ -1090,6 +1093,45 @@ function mount(ctx: HostContext, config: RawConfig): void {
       // A missing or unreadable token file is already inert.
     }
   }, 'im-remote-control: token file')
+
+  /** Whether a conflicting token file was already reported for this mount. */
+  let tokenConflictLogged = false
+
+  /**
+   * Rewrite this mount's token when the file vanished.
+   *
+   * The token is per-mount and the file is shared, so disposing a speculative
+   * mount can remove it while another instance keeps serving. Without this,
+   * dispatch fails until the host restarts even though messages still flow.
+   * Only writes when the file is missing or empty: a different non-empty token
+   * belongs to another mount and is left alone.
+   */
+  function ensureToken(): void {
+    try {
+      const current = existsSync(TOKEN_PATH) ? readFileSync(TOKEN_PATH, 'utf8').trim() : ''
+      if (current === token) return
+      if (current !== '') {
+        if (!tokenConflictLogged) {
+          tokenConflictLogged = true
+          logLine('warn', 'token file belongs to another mount; dispatch may target that instance')
+        }
+        return
+      }
+      writeFileSync(TOKEN_PATH, `${token}\n`, { mode: 0o600 })
+      chmodSync(TOKEN_PATH, 0o600)
+      logLine('info', 'token file restored')
+    } catch (error) {
+      logLine('warn', `token restore failed: ${String(error)}`)
+    }
+  }
+
+  // A deleted token file must not require a restart: the next inbound message
+  // rewrites it immediately, and the watchdog covers the idle case.
+  ctx.effect(() => {
+    const timer = setInterval(ensureToken, 60_000)
+    timer.unref?.()
+    return () => { clearInterval(timer) }
+  }, 'im-remote-control: token watchdog')
 
   /**
    * Test whether one request carries this mount's bearer token.
