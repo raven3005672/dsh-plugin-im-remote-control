@@ -222,3 +222,4 @@ admitted om_x100b61d980502cb4b0fab745200489d → session-9ce7213e-8bb6-4271-bfbe
 - **0.2.0** 已通过 `v0.2.0` tag → GitHub Actions → npm Trusted Publishing 发布（SLSA provenance，14 个文件 / 241 KB，`latest = 0.2.0`）。
 - 内容：卡片审批、卡片提问、引用回复路由（含主聊天回帖）、图片输入；文件/语音/微信/gateway 仍未交付。
 - 发布 workflow：`.github/workflows/publish.yml`（tag `v*`、校验 tag 与 package.json 版本一致、`npm run verify`、`npm publish --provenance`）。
+- **0.2.1**（2026-11-19）：token 丢失自愈（`ensureToken` + 60s watchdog），其余功能与 0.2.0 相同；同样通过 tag → CI → npm（provenance）。
